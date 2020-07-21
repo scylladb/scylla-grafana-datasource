@@ -65,6 +65,8 @@ func (td *SampleDatasource) QueryData(ctx context.Context, req *backend.QueryDat
 
 type queryModel struct {
 	Format string `json:"format"`
+	constant string `json:"constant"`
+	queryTxt string `json:"queryTxt"`
 }
 
 func getTypeArray(typ string) interface{} {
