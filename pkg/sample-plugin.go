@@ -1,12 +1,12 @@
 package main
-
 import (
 	"context"
 	"encoding/json"
 	"math/rand"
-	"net/http"
 	"time"
 
+	"fmt"
+	"github.com/gocql/gocql"
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/datasource"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/instancemgmt"
@@ -46,12 +46,14 @@ type SampleDatasource struct {
 func (td *SampleDatasource) QueryData(ctx context.Context, req *backend.QueryDataRequest) (*backend.QueryDataResponse, error) {
 	log.DefaultLogger.Info("QueryData", "request", req)
 
+	instance, err := td.im.Get(req.PluginContext)
 	// create response struct
 	response := backend.NewQueryDataResponse()
+	instSetting, ok := instance.(*instanceSettings)
 
 	// loop over queries and execute them individually.
 	for _, q := range req.Queries {
-		res := td.query(ctx, q)
+		res := td.query(ctx, instSetting, q)
 
 		// save the response in a hashmap
 		// based on with RefID as identifier
@@ -63,37 +65,81 @@ func (td *SampleDatasource) QueryData(ctx context.Context, req *backend.QueryDat
 
 type queryModel struct {
 	Format string `json:"format"`
+	constant string `json:"constant"`
+	queryTxt string `json:"queryTxt"`
 }
 
-func (td *SampleDatasource) query(ctx context.Context, query backend.DataQuery) backend.DataResponse {
+func getTypeArray(typ string) interface{} {
+    log.DefaultLogger.Warn("getTypeArray", "type", typ)
+    switch t := typ; t {
+        case "TypeDate":
+            return []time.Time{}
+        case "TypeTime":
+            return []time.Time{}
+        case "int":
+            return []int64{}
+        case "TypeFloat":
+            return []int64{}
+        default:
+            return []string{}
+    }
+}
+func (td *SampleDatasource) query(ctx context.Context, instance *instanceSettings,  query backend.DataQuery) backend.DataResponse {
 	// Unmarshal the json into our queryModel
-	var qm queryModel
+	var hosts queryModel
 
 	response := backend.DataResponse{}
 
-	response.Error = json.Unmarshal(query.JSON, &qm)
+	response.Error = json.Unmarshal(query.JSON, &hosts)
+	var v interface{}
+	json.Unmarshal(query.JSON, &v)
+	dt := v.(map[string]interface{})
 	if response.Error != nil {
 		return response
 	}
 
 	// Log a warning if `Format` is empty.
-	if qm.Format == "" {
+	if hosts.Format == "" {
 		log.DefaultLogger.Warn("format is empty. defaulting to time series")
 	}
 
 	// create data frame response
 	frame := data.NewFrame("response")
-
-	// add the time dimension
-	frame.Fields = append(frame.Fields,
-		data.NewField("time", nil, []time.Time{query.TimeRange.From, query.TimeRange.To}),
-	)
-
-	// add values
-	frame.Fields = append(frame.Fields,
-		data.NewField("values", nil, []int64{10, 20}),
-	)
-
+	if val, ok := dt["queryText"]; ok {
+	   querytxt := fmt.Sprintf("%v", val)
+	   log.DefaultLogger.Warn("queryText found", "txt", querytxt, "cluster", instance)
+	   session, err := gocql.NewSession(*instance.cluster)
+	   if err != nil {
+	       log.DefaultLogger.Warn("unable to connect to scylla", "error", err, "session", session)
+	   }
+	   iter := session.Query(querytxt).Iter()
+	   var headerName = make([]string, len(iter.Columns()))
+	   for i, c := range iter.Columns() {
+            log.DefaultLogger.Warn(c.Name)
+            headerName[i] = c.Name
+            frame.Fields = append(frame.Fields,
+                data.NewField(c.Name, nil, getTypeArray(c.TypeInfo.Type().String())),
+            )
+        }
+        for {
+            // New map each iteration
+            row := make(map[string]interface{})
+            if !iter.MapScan(row) {
+                break
+            }
+            vals := make([]interface{}, len(headerName))
+            for i, h := range headerName {
+                vals[i] = row[h]
+            }
+            log.DefaultLogger.Warn("adding vals", "vals", vals)
+            frame.AppendRow(vals...)
+        }
+        if err := iter.Close(); err != nil {
+            log.DefaultLogger.Warn(err.Error())
+        }
+        //do something here
+    }
+	// create data frame response
 	// add the frames to the response
 	response.Frames = append(response.Frames, frame)
 
@@ -120,12 +166,25 @@ func (td *SampleDatasource) CheckHealth(ctx context.Context, req *backend.CheckH
 }
 
 type instanceSettings struct {
-	httpClient *http.Client
+	//httpClient *http.Client
+    cluster *gocql.ClusterConfig
 }
 
 func newDataSourceInstance(setting backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
+    type editModel struct {
+        host string
+    }
+    var hosts editModel
+    err := json.Unmarshal(setting.JSONData, &hosts)
+    var v interface{}
+    json.Unmarshal(setting.JSONData, &v)
+    data := v.(map[string]interface{})
+    if err != nil {
+        log.DefaultLogger.Warn("error marsheling", "err", err)
+    }
+    host := fmt.Sprintf("%v", data["host"])
 	return &instanceSettings{
-		httpClient: &http.Client{},
+		cluster: gocql.NewCluster(host),
 	}, nil
 }
 
