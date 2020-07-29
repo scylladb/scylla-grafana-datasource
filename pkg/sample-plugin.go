@@ -2,7 +2,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"math/rand"
 	"time"
 
 	"fmt"
@@ -16,6 +15,7 @@ import (
 
 // newDatasource returns datasource.ServeOpts.
 func newDatasource() datasource.ServeOpts {
+    log.DefaultLogger.Debug("Creating new datasource")
 	// creates a instance manager for your plugin. The function passed
 	// into `NewInstanceManger` is called when the instance is created
 	// for the first time or when a datasource configuration changed.
@@ -47,10 +47,17 @@ func (td *SampleDatasource) QueryData(ctx context.Context, req *backend.QueryDat
 	log.DefaultLogger.Info("QueryData", "request", req)
 
 	instance, err := td.im.Get(req.PluginContext)
+	if err != nil {
+	   log.DefaultLogger.Info("Failed getting connection", "error", err)
+	   return nil, err
+	}
 	// create response struct
 	response := backend.NewQueryDataResponse()
 	instSetting, ok := instance.(*instanceSettings)
-
+    if !ok {
+        log.DefaultLogger.Info("Failed getting connection")
+        return nil, nil
+    }
 	// loop over queries and execute them individually.
 	for _, q := range req.Queries {
 		res := td.query(ctx, instSetting, q)
@@ -65,12 +72,11 @@ func (td *SampleDatasource) QueryData(ctx context.Context, req *backend.QueryDat
 
 type queryModel struct {
 	Format string `json:"format"`
-	constant string `json:"constant"`
-	queryTxt string `json:"queryTxt"`
+	QueryTxt string `json:"queryTxt"`
 }
 
 func getTypeArray(typ string) interface{} {
-    log.DefaultLogger.Warn("getTypeArray", "type", typ)
+    log.DefaultLogger.Debug("getTypeArray", "type", typ)
     switch t := typ; t {
         case "TypeDate":
             return []time.Time{}
@@ -79,11 +85,38 @@ func getTypeArray(typ string) interface{} {
         case "int":
             return []int64{}
         case "TypeFloat":
-            return []int64{}
+            return []float64{}
         default:
             return []string{}
     }
 }
+
+func toValue(val interface{}, typ string) interface{} {
+    if (val == nil) {
+        return nil
+    }
+    switch t := typ; t {
+        case "TypeDate":
+            return val
+        case "TypeTime":
+            return val
+        case "int":
+            return int64(val.(int))
+        case "TypeFloat":
+            return val
+        case "varchar":
+            return val
+        case "blob":
+            return "Blob"
+        default:
+            r, err := json.Marshal(val)
+            if (err != nil) {
+                log.DefaultLogger.Info("Marsheling failed ", "err", err)
+            }
+            return string(r)
+    }
+}
+
 func (td *SampleDatasource) query(ctx context.Context, instance *instanceSettings,  query backend.DataQuery) backend.DataResponse {
 	// Unmarshal the json into our queryModel
 	var hosts queryModel
@@ -95,28 +128,28 @@ func (td *SampleDatasource) query(ctx context.Context, instance *instanceSetting
 	json.Unmarshal(query.JSON, &v)
 	dt := v.(map[string]interface{})
 	if response.Error != nil {
+	   log.DefaultLogger.Warning("Failed unmarsheling json", "err", response.Error, "json ", string(query.JSON))
 		return response
 	}
 
 	// Log a warning if `Format` is empty.
 	if hosts.Format == "" {
-		log.DefaultLogger.Warn("format is empty. defaulting to time series")
+		log.DefaultLogger.Info("format is empty. defaulting to time series")
 	}
 
 	// create data frame response
 	frame := data.NewFrame("response")
 	if val, ok := dt["queryText"]; ok {
 	   querytxt := fmt.Sprintf("%v", val)
-	   log.DefaultLogger.Warn("queryText found", "txt", querytxt, "cluster", instance)
+	   log.DefaultLogger.Debug("queryText found", "querytxt", querytxt, "instance", instance)
 	   session, err := gocql.NewSession(*instance.cluster)
 	   if err != nil {
-	       log.DefaultLogger.Warn("unable to connect to scylla", "error", err, "session", session)
+	       log.DefaultLogger.Info("unable to connect to scylla", "err", err, "session", session)
+	       return response
 	   }
 	   iter := session.Query(querytxt).Iter()
-	   var headerName = make([]string, len(iter.Columns()))
-	   for i, c := range iter.Columns() {
-            log.DefaultLogger.Warn(c.Name)
-            headerName[i] = c.Name
+	   cols := iter.Columns()
+	   for _, c := range iter.Columns() {
             frame.Fields = append(frame.Fields,
                 data.NewField(c.Name, nil, getTypeArray(c.TypeInfo.Type().String())),
             )
@@ -127,17 +160,16 @@ func (td *SampleDatasource) query(ctx context.Context, instance *instanceSetting
             if !iter.MapScan(row) {
                 break
             }
-            vals := make([]interface{}, len(headerName))
-            for i, h := range headerName {
-                vals[i] = row[h]
+            vals := make([]interface{}, len(cols))
+            for i, c := range cols {
+                vals[i] = toValue(row[c.Name], c.TypeInfo.Type().String())
             }
-            log.DefaultLogger.Warn("adding vals", "vals", vals)
+            log.DefaultLogger.Debug("adding vals", "vals", vals)
             frame.AppendRow(vals...)
         }
         if err := iter.Close(); err != nil {
             log.DefaultLogger.Warn(err.Error())
         }
-        //do something here
     }
 	// create data frame response
 	// add the frames to the response
@@ -154,11 +186,6 @@ func (td *SampleDatasource) CheckHealth(ctx context.Context, req *backend.CheckH
 	var status = backend.HealthStatusOk
 	var message = "Data source is working"
 
-	if rand.Int()%2 == 0 {
-		status = backend.HealthStatusError
-		message = "randomized error"
-	}
-
 	return &backend.CheckHealthResult{
 		Status:  status,
 		Message: message,
@@ -166,25 +193,23 @@ func (td *SampleDatasource) CheckHealth(ctx context.Context, req *backend.CheckH
 }
 
 type instanceSettings struct {
-	//httpClient *http.Client
     cluster *gocql.ClusterConfig
 }
 
 func newDataSourceInstance(setting backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
     type editModel struct {
-        host string
+        Host string `json:"host"`
     }
     var hosts editModel
+    log.DefaultLogger.Debug("newDataSourceInstance", "data", setting.JSONData)
     err := json.Unmarshal(setting.JSONData, &hosts)
-    var v interface{}
-    json.Unmarshal(setting.JSONData, &v)
-    data := v.(map[string]interface{})
     if err != nil {
         log.DefaultLogger.Warn("error marsheling", "err", err)
+        return nil, err
     }
-    host := fmt.Sprintf("%v", data["host"])
+    log.DefaultLogger.Info("looking for host", "host", hosts.Host)
 	return &instanceSettings{
-		cluster: gocql.NewCluster(host),
+		cluster: gocql.NewCluster(hosts.Host),
 	}, nil
 }
 
