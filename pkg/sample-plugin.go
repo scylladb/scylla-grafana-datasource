@@ -85,11 +85,38 @@ func getTypeArray(typ string) interface{} {
         case "int":
             return []int64{}
         case "TypeFloat":
-            return []int64{}
+            return []float64{}
         default:
             return []string{}
     }
 }
+
+func toValue(val interface{}, typ string) interface{} {
+    if (val == nil) {
+        return nil
+    }
+    switch t := typ; t {
+        case "TypeDate":
+            return val
+        case "TypeTime":
+            return val
+        case "int":
+            return int64(val.(int))
+        case "TypeFloat":
+            return val
+        case "varchar":
+            return val
+        case "blob":
+            return "Blob"
+        default:
+            r, err := json.Marshal(val)
+            if (err != nil) {
+                log.DefaultLogger.Info("Marsheling failed ", "err", err)
+            }
+            return string(r)
+    }
+}
+
 func (td *SampleDatasource) query(ctx context.Context, instance *instanceSettings,  query backend.DataQuery) backend.DataResponse {
 	// Unmarshal the json into our queryModel
 	var hosts queryModel
@@ -121,10 +148,8 @@ func (td *SampleDatasource) query(ctx context.Context, instance *instanceSetting
 	       return response
 	   }
 	   iter := session.Query(querytxt).Iter()
-	   var headerName = make([]string, len(iter.Columns()))
-	   for i, c := range iter.Columns() {
-            log.DefaultLogger.Warn(c.Name)
-            headerName[i] = c.Name
+	   cols := iter.Columns()
+	   for _, c := range iter.Columns() {
             frame.Fields = append(frame.Fields,
                 data.NewField(c.Name, nil, getTypeArray(c.TypeInfo.Type().String())),
             )
@@ -135,9 +160,9 @@ func (td *SampleDatasource) query(ctx context.Context, instance *instanceSetting
             if !iter.MapScan(row) {
                 break
             }
-            vals := make([]interface{}, len(headerName))
-            for i, h := range headerName {
-                vals[i] = row[h]
+            vals := make([]interface{}, len(cols))
+            for i, c := range cols {
+                vals[i] = toValue(row[c.Name], c.TypeInfo.Type().String())
             }
             log.DefaultLogger.Debug("adding vals", "vals", vals)
             frame.AppendRow(vals...)
