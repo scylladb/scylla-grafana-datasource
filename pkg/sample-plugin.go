@@ -16,6 +16,7 @@ import (
 
 // newDatasource returns datasource.ServeOpts.
 func newDatasource() datasource.ServeOpts {
+    log.DefaultLogger.Debug("Creating new datasource")
 	// creates a instance manager for your plugin. The function passed
 	// into `NewInstanceManger` is called when the instance is created
 	// for the first time or when a datasource configuration changed.
@@ -47,10 +48,17 @@ func (td *SampleDatasource) QueryData(ctx context.Context, req *backend.QueryDat
 	log.DefaultLogger.Info("QueryData", "request", req)
 
 	instance, err := td.im.Get(req.PluginContext)
+	if err != nil {
+	   log.DefaultLogger.Info("Failed getting connection", "error", err)
+	   return nil, err
+	}
 	// create response struct
 	response := backend.NewQueryDataResponse()
 	instSetting, ok := instance.(*instanceSettings)
-
+    if !ok {
+        log.DefaultLogger.Info("Failed getting connection")
+        return nil, nil
+    }
 	// loop over queries and execute them individually.
 	for _, q := range req.Queries {
 		res := td.query(ctx, instSetting, q)
@@ -70,7 +78,7 @@ type queryModel struct {
 }
 
 func getTypeArray(typ string) interface{} {
-    log.DefaultLogger.Warn("getTypeArray", "type", typ)
+    log.DefaultLogger.Debug("getTypeArray", "type", typ)
     switch t := typ; t {
         case "TypeDate":
             return []time.Time{}
@@ -95,22 +103,24 @@ func (td *SampleDatasource) query(ctx context.Context, instance *instanceSetting
 	json.Unmarshal(query.JSON, &v)
 	dt := v.(map[string]interface{})
 	if response.Error != nil {
+	   log.DefaultLogger.Warning("Failed unmarsheling json", "err", response.Error, "json ", string(query.JSON))
 		return response
 	}
 
 	// Log a warning if `Format` is empty.
 	if hosts.Format == "" {
-		log.DefaultLogger.Warn("format is empty. defaulting to time series")
+		log.DefaultLogger.Info("format is empty. defaulting to time series")
 	}
 
 	// create data frame response
 	frame := data.NewFrame("response")
 	if val, ok := dt["queryText"]; ok {
 	   querytxt := fmt.Sprintf("%v", val)
-	   log.DefaultLogger.Warn("queryText found", "txt", querytxt, "cluster", instance)
+	   log.DefaultLogger.Debug("queryText found", "querytxt", querytxt, "instance", instance)
 	   session, err := gocql.NewSession(*instance.cluster)
 	   if err != nil {
-	       log.DefaultLogger.Warn("unable to connect to scylla", "error", err, "session", session)
+	       log.DefaultLogger.Info("unable to connect to scylla", "err", err, "session", session)
+	       return response
 	   }
 	   iter := session.Query(querytxt).Iter()
 	   var headerName = make([]string, len(iter.Columns()))
@@ -131,7 +141,7 @@ func (td *SampleDatasource) query(ctx context.Context, instance *instanceSetting
             for i, h := range headerName {
                 vals[i] = row[h]
             }
-            log.DefaultLogger.Warn("adding vals", "vals", vals)
+            log.DefaultLogger.Debug("adding vals", "vals", vals)
             frame.AppendRow(vals...)
         }
         if err := iter.Close(); err != nil {
@@ -175,14 +185,17 @@ func newDataSourceInstance(setting backend.DataSourceInstanceSettings) (instance
         host string
     }
     var hosts editModel
+    log.DefaultLogger.Debug("newDataSourceInstance", "data", setting.JSONData)
     err := json.Unmarshal(setting.JSONData, &hosts)
     var v interface{}
     json.Unmarshal(setting.JSONData, &v)
     data := v.(map[string]interface{})
     if err != nil {
         log.DefaultLogger.Warn("error marsheling", "err", err)
+        return nil, err
     }
     host := fmt.Sprintf("%v", data["host"])
+    log.DefaultLogger.Info("looking for host", "host", hosts.Host)
 	return &instanceSettings{
 		cluster: gocql.NewCluster(host),
 	}, nil
