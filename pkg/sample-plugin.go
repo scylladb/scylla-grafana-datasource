@@ -2,7 +2,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"math/rand"
 	"time"
 
 	"fmt"
@@ -73,8 +72,7 @@ func (td *SampleDatasource) QueryData(ctx context.Context, req *backend.QueryDat
 
 type queryModel struct {
 	Format string `json:"format"`
-	constant string `json:"constant"`
-	queryTxt string `json:"queryTxt"`
+	QueryTxt string `json:"queryTxt"`
 }
 
 func getTypeArray(typ string) interface{} {
@@ -147,7 +145,6 @@ func (td *SampleDatasource) query(ctx context.Context, instance *instanceSetting
         if err := iter.Close(); err != nil {
             log.DefaultLogger.Warn(err.Error())
         }
-        //do something here
     }
 	// create data frame response
 	// add the frames to the response
@@ -164,11 +161,6 @@ func (td *SampleDatasource) CheckHealth(ctx context.Context, req *backend.CheckH
 	var status = backend.HealthStatusOk
 	var message = "Data source is working"
 
-	if rand.Int()%2 == 0 {
-		status = backend.HealthStatusError
-		message = "randomized error"
-	}
-
 	return &backend.CheckHealthResult{
 		Status:  status,
 		Message: message,
@@ -176,28 +168,23 @@ func (td *SampleDatasource) CheckHealth(ctx context.Context, req *backend.CheckH
 }
 
 type instanceSettings struct {
-	//httpClient *http.Client
     cluster *gocql.ClusterConfig
 }
 
 func newDataSourceInstance(setting backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
     type editModel struct {
-        host string
+        Host string `json:"host"`
     }
     var hosts editModel
     log.DefaultLogger.Debug("newDataSourceInstance", "data", setting.JSONData)
     err := json.Unmarshal(setting.JSONData, &hosts)
-    var v interface{}
-    json.Unmarshal(setting.JSONData, &v)
-    data := v.(map[string]interface{})
     if err != nil {
         log.DefaultLogger.Warn("error marsheling", "err", err)
         return nil, err
     }
-    host := fmt.Sprintf("%v", data["host"])
     log.DefaultLogger.Info("looking for host", "host", hosts.Host)
 	return &instanceSettings{
-		cluster: gocql.NewCluster(host),
+		cluster: gocql.NewCluster(hosts.Host),
 	}, nil
 }
 
