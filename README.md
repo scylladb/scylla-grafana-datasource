@@ -1,17 +1,55 @@
-# Grafana Data Source Backend Plugin Template
+# Scylla/Appache Cassandra Backend Plugin
+
+The plugin is currently in Alpha and not ready for comercial usage.
 
 [![CircleCI](https://circleci.com/gh/grafana/simple-datasource-backend/tree/master.svg?style=svg)](https://circleci.com/gh/grafana/simple-datasource-backend/tree/master)
 
-This template is a starting point for building Grafana Data Source Backend Plugins
+This plugin allows connecting Scylla or Appahe Cassandra to Grafana.
 
-## What is Grafana Data Source Backend Plugin?
+## What is Scylla Grafana Data Source Backend Plugin?
 
-Grafana supports a wide range of data sources, including Prometheus, MySQL, and even Datadog. There’s a good chance you can already visualize metrics from the systems you have set up. In some cases, though, you already have an in-house metrics solution that you’d like to add to your Grafana dashboards. Grafana Data Source Plugins enables integrating such solutions with Grafana.
+A [Backend plugins](https://grafana.com/docs/grafana/latest/developers/plugins/backend/) is a type of data-source plugin that runs on the server.
+That means that that from IP connectivity, your Database (Scylla or Appache Cassanra) should be accessible from the grafana server.
 
-For more information about backend plugins, refer to the documentation on [Backend plugins](https://grafana.com/docs/grafana/latest/developers/plugins/backend/).
 
 ## Getting started
+Use Grafana 7.0 or higher
+* Download and place the datasouce in grafana/plugins directory.
 
+This plugin is not signed yet, Granfa will not allow loading it by default. you should enable it by adding:
+
+for example, if you are using Grafana with containers, add:
+```
+-e "GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=scylla-db-scylla-datasource"
+```
+
+You can now add the scylla data source, the only current configuration is a host in the cluster.
+
+When adding a panel use CQL to get the data.
+you can only do select statements, but any valid select would work.
+
+
+## For Scylla-Monitoring Users
+* Take the master branch that would run Grafana 7
+* Either edit and add the the `ALLOW_PLUGINS` to `start-grafana.sh` or use the command line flag to `start-all.sh`
+```
+./start-all.sh -s scylla_servers.yml -c "GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=scylla-db-scylla-datasource"
+
+```
+* If you do not want to configure the data source on every restart, edit `grafana/datasource.yml`
+And add:
+```
+- name: scylla-datasource
+  type: scylla-db-scylla-datasource
+  orgId: 1
+  isDefault:
+    jsonData:
+        host: 'node-ip'
+```
+Replacing `node-ip` with an ip of a node in the cluster.
+
+
+## Compiling the data source by yourself
 A data source backend plugin consists of both frontend and backend components.
 
 ### Frontend
@@ -54,8 +92,4 @@ mage -l
 
 ## Learn more
 
-- [Build a data source backend plugin tutorial](https://grafana.com/tutorials/build-a-data-source-backend-plugin)
-- [Grafana documentation](https://grafana.com/docs/)
-- [Grafana Tutorials](https://grafana.com/tutorials/) - Grafana Tutorials are step-by-step guides that help you make the most of Grafana
-- [Grafana UI Library](https://developers.grafana.com/ui) - UI components to help you build interfaces using Grafana Design System
 - [Grafana plugin SDK for Go](https://grafana.com/docs/grafana/latest/developers/plugins/backend/grafana-plugin-sdk-for-go/)
