@@ -3,6 +3,9 @@ import (
 	"context"
 	"encoding/json"
 	"time"
+	"gopkg.in/inf.v0"
+	"strconv"
+	"math/big"
 
 	"fmt"
 	"github.com/gocql/gocql"
@@ -44,6 +47,11 @@ type SampleDatasource struct {
 // The QueryDataResponse contains a map of RefID to the response for each query, and each response
 // contains Frames ([]*Frame).
 func (td *SampleDatasource) QueryData(ctx context.Context, req *backend.QueryDataRequest) (*backend.QueryDataResponse, error) {
+    defer func() {
+        if r := recover(); r != nil {
+            log.DefaultLogger.Info("Recovered in QueryData", "error", r)
+        }
+    }()
 	log.DefaultLogger.Info("QueryData", "request", req)
 
 	instance, err := td.im.Get(req.PluginContext)
@@ -78,14 +86,20 @@ type queryModel struct {
 func getTypeArray(typ string) interface{} {
     log.DefaultLogger.Debug("getTypeArray", "type", typ)
     switch t := typ; t {
-        case "TypeDate":
+        case "timestamp":
             return []time.Time{}
-        case "TypeTime":
-            return []time.Time{}
-        case "int":
+        case "bigint", "int":
             return []int64{}
-        case "TypeFloat":
+        case "smallint":
+            return []int16{}
+        case "boolean":
+            return []bool{}
+        case "double", "varint", "decimal":
             return []float64{}
+        case "float":
+            return []float32{}
+        case "tinyint":
+            return []int8{}
         default:
             return []string{}
     }
@@ -96,18 +110,26 @@ func toValue(val interface{}, typ string) interface{} {
         return nil
     }
     switch t := typ; t {
-        case "TypeDate":
-            return val
-        case "TypeTime":
-            return val
-        case "int":
-            return int64(val.(int))
-        case "TypeFloat":
-            return val
-        case "varchar":
-            return val
         case "blob":
             return "Blob"
+    }
+    switch t := val.(type) {
+        case float32, time.Time, string, int64, float64, bool, int16, int8:
+            return t
+        case gocql.UUID:
+            return t.String()
+        case int:
+            return int64(t)
+        case *inf.Dec:
+            if s, err := strconv.ParseFloat(t.String(), 64); err == nil {
+                return s
+            }
+            return 0
+        case *big.Int:
+            if s, err := strconv.ParseFloat(t.String(), 64); err == nil {
+                return s
+            }
+            return 0
         default:
             r, err := json.Marshal(val)
             if (err != nil) {
@@ -128,7 +150,7 @@ func (td *SampleDatasource) query(ctx context.Context, instance *instanceSetting
 	json.Unmarshal(query.JSON, &v)
 	dt := v.(map[string]interface{})
 	if response.Error != nil {
-	   log.DefaultLogger.Warning("Failed unmarsheling json", "err", response.Error, "json ", string(query.JSON))
+	   log.DefaultLogger.Warn("Failed unmarsheling json", "err", response.Error, "json ", string(query.JSON))
 		return response
 	}
 
