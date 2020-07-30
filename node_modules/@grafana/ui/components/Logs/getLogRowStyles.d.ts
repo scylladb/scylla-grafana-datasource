@@ -1,0 +1,22 @@
+import { LogLevel } from '@grafana/data';
+import { GrafanaTheme } from '@grafana/data';
+export declare const getLogRowStyles: (theme: GrafanaTheme, logLevel?: LogLevel | undefined) => {
+    logsRowMatchHighLight: string;
+    logsRowMatchHighLightPreview: string;
+    logsRowsTable: string;
+    logsRowsHorizontalScroll: string;
+    context: string;
+    logsRow: string;
+    logsRowDuplicates: string;
+    logsRowLevel: string;
+    logsRowToggleDetails: string;
+    logsRowLocalTime: string;
+    logsRowLabels: string;
+    logsRowMessage: string;
+    logDetailsContainer: string;
+    logDetailsTable: string;
+    logsDetailsIcon: string;
+    logDetailsLabel: string;
+    logDetailsHeading: string;
+    logDetailsValue: string;
+};

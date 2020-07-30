@@ -1,0 +1,112 @@
+{
+  "name": "react-calendar",
+  "version": "2.19.2",
+  "description": "Ultimate calendar for your React app.",
+  "main": "dist/entry.js",
+  "source": "src/entry.js",
+  "types": "./index.d.ts",
+  "scripts": {
+    "build": "yarn build-js && yarn copy-styles && yarn build-styles && yarn copy-types",
+    "build-js": "babel src -d dist --ignore **/__tests__,**/**/__tests__",
+    "build-styles": "lessc ./dist/Calendar.less ./dist/Calendar.css",
+    "clean": "rimraf dist",
+    "copy-styles": "node ./copy-styles.js",
+    "copy-types": "node ./copy-types.js",
+    "jest": "jest",
+    "jest-coverage": "jest --coverage",
+    "lint": "eslint sample/ src/ test/ --ext .jsx,.js",
+    "prepublishOnly": "yarn clean && yarn build",
+    "test": "yarn lint && yarn jest"
+  },
+  "jest": {
+    "setupFiles": [
+      "<rootDir>/jest.setup.js"
+    ],
+    "collectCoverageFrom": [
+      "**/src/**.{js,jsx}",
+      "!**/src/entry.js",
+      "!**/src/entry.nostyle.js"
+    ]
+  },
+  "keywords": [
+    "calendar",
+    "date",
+    "date-picker",
+    "month-picker",
+    "react"
+  ],
+  "author": {
+    "name": "Wojciech Maj",
+    "email": "kontakt@wojtekmaj.pl"
+  },
+  "contributors": [
+    {
+      "name": "Andriy Kuzyk"
+    },
+    {
+      "name": "Baldur Árnason"
+    },
+    {
+      "name": "Jack Willis-Craig"
+    },
+    {
+      "name": "JamieEgeberg"
+    },
+    {
+      "name": "Justin Davis"
+    },
+    {
+      "name": "Kevin Kipp",
+      "email": "kevin.kipp@gmail.com"
+    },
+    {
+      "name": "Ritesh Kumar",
+      "email": "rkritesh078@gmail.com"
+    }
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "get-user-locale": "^1.2.0",
+    "merge-class-names": "^1.1.1",
+    "prop-types": "^15.6.0",
+    "react-lifecycles-compat": "^3.0.4"
+  },
+  "devDependencies": {
+    "@babel/cli": "^7.5.5",
+    "@babel/core": "^7.5.5",
+    "@babel/plugin-proposal-class-properties": "^7.5.5",
+    "@babel/preset-env": "^7.5.5",
+    "@babel/preset-react": "^7.0.0",
+    "babel-eslint": "^10.0.0",
+    "babel-jest": "^24.0.0",
+    "enzyme": "^3.10.0",
+    "enzyme-adapter-react-16": "^1.14.0",
+    "eslint": "^6.1.0",
+    "eslint-config-airbnb": "^18.0.0",
+    "eslint-plugin-import": "^2.18.2",
+    "eslint-plugin-jsx-a11y": "^6.2.3",
+    "eslint-plugin-react": "^7.14.3",
+    "eslint-plugin-react-hooks": "^1.7.0",
+    "jest": "^24.8.0",
+    "less": "^3.8.1",
+    "react": "^16.7.0",
+    "react-dom": "^16.7.0",
+    "react-test-renderer": "^16.7.0",
+    "rimraf": "^2.6.2"
+  },
+  "peerDependencies": {
+    "react": ">=15.5",
+    "react-dom": ">=15.5"
+  },
+  "files": [
+    "LICENSE",
+    "README.md",
+    "index.d.ts",
+    "dist/",
+    "src/"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wojtekmaj/react-calendar.git"
+  }
+}

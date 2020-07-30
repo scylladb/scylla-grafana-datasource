@@ -1,0 +1,3 @@
+/// <reference types="react" />
+import { SelectBaseProps } from './types';
+export declare function SelectBase<T>({ allowCustomValue, autoFocus, backspaceRemovesValue, cacheOptions, className, closeMenuOnSelect, components, defaultOptions, defaultValue, disabled, filterOption, formatCreateLabel, getOptionLabel, getOptionValue, inputValue, invalid, isClearable, isLoading, isMulti, isOpen, isOptionDisabled, isSearchable, loadOptions, loadingMessage, maxMenuHeight, maxVisibleValues, menuPlacement, menuPosition, noOptionsMessage, onBlur, onChange, onCloseMenu, onCreateOption, onInputChange, onKeyDown, onOpenMenu, openMenuOnFocus, options, placeholder, prefix, renderControl, showAllSelectedWhenOpen, tabSelectsValue, value, width, }: SelectBaseProps<T>): JSX.Element;
