@@ -18,29 +18,53 @@ export class ConfigEditor extends PureComponent<Props, State> {
     };
     onOptionsChange({ ...options, jsonData });
   };
-
-  // Secure field (only sent to the backend)
-  onAPIKeyChange = (event: ChangeEvent<HTMLInputElement>) => {
+  onUserChange = (event: ChangeEvent<HTMLInputElement>) => {
     const { onOptionsChange, options } = this.props;
     onOptionsChange({
       ...options,
       secureJsonData: {
-        apiKey: event.target.value,
+        ...options.secureJsonData,
+        user: event.target.value,
+      },
+    });
+  };
+  // Secure field (only sent to the backend)
+  onPasswordChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const { onOptionsChange, options } = this.props;
+    onOptionsChange({
+      ...options,
+      secureJsonData: {
+        ...options.secureJsonData,
+        password: event.target.value,
       },
     });
   };
 
-  onResetAPIKey = () => {
+  onResetPassword = () => {
     const { onOptionsChange, options } = this.props;
     onOptionsChange({
       ...options,
       secureJsonFields: {
         ...options.secureJsonFields,
-        apiKey: false,
+        password: false,
       },
       secureJsonData: {
         ...options.secureJsonData,
-        apiKey: '',
+        password: '',
+      },
+    });
+  };
+  onResetUser = () => {
+    const { onOptionsChange, options } = this.props;
+    onOptionsChange({
+      ...options,
+      secureJsonFields: {
+        ...options.secureJsonFields,
+        user: false,
+      },
+      secureJsonData: {
+        ...options.secureJsonData,
+        user: '',
       },
     });
   };
@@ -59,21 +83,33 @@ export class ConfigEditor extends PureComponent<Props, State> {
             inputWidth={20}
             onChange={this.onHostChange}
             value={jsonData.host || ''}
-            placeholder="json field returned to frontend"
+            placeholder="A host ip address"
+          />
+        </div>
+        <div className="gf-form">
+          <SecretFormField
+            isConfigured={(secureJsonFields && secureJsonFields.user) as boolean}
+            label="User"
+            labelWidth={6}
+            inputWidth={20}
+            onChange={this.onUserChange}
+            value={secureJsonData.user || ''}
+            onReset={this.onResetUser}
+            placeholder="A Database user"
           />
         </div>
 
         <div className="gf-form-inline">
           <div className="gf-form">
             <SecretFormField
-              isConfigured={(secureJsonFields && secureJsonFields.apiKey) as boolean}
-              value={secureJsonData.apiKey || ''}
-              label="API Key"
-              placeholder="secure json field (backend only)"
+              isConfigured={(secureJsonFields && secureJsonFields.password) as boolean}
+              value={secureJsonData.password || ''}
+              label="Password"
+              placeholder="User password"
               labelWidth={6}
               inputWidth={20}
-              onReset={this.onResetAPIKey}
-              onChange={this.onAPIKeyChange}
+              onReset={this.onResetPassword}
+              onChange={this.onPasswordChange}
             />
           </div>
         </div>
