@@ -43,12 +43,23 @@ And add:
   type: scylla-db-scylla-datasource
   orgId: 1
   isDefault:
-    jsonData:
-        host: 'node-ip'
+  jsonData:
+    host: 'node-ip'
 ```
 Replacing `node-ip` with an ip of a node in the cluster.
 
-
+To support user and password add `secureJsonData` to `grafana/datasource.yml`
+```
+- name: scylla-datasource
+  type: scylla-db-scylla-datasource
+  orgId: 1
+  isDefault:
+  jsonData:
+    host: 'node-ip'
+  secureJsonData:
+    user: 'cassandra'
+    password: 'cassandra'
+```
 ## Compiling the data source by yourself
 A data source backend plugin consists of both frontend and backend components.
 
