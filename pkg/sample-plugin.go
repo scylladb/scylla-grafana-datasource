@@ -224,14 +224,25 @@ func newDataSourceInstance(setting backend.DataSourceInstanceSettings) (instance
     }
     var hosts editModel
     log.DefaultLogger.Debug("newDataSourceInstance", "data", setting.JSONData)
+    var secureData = setting.DecryptedSecureJSONData
     err := json.Unmarshal(setting.JSONData, &hosts)
     if err != nil {
         log.DefaultLogger.Warn("error marsheling", "err", err)
         return nil, err
     }
     log.DefaultLogger.Info("looking for host", "host", hosts.Host)
+    var newCluster = gocql.NewCluster(hosts.Host)
+    password, hasPassword := secureData["password"]
+    user, hasUser := secureData["user"]
+    if hasPassword && hasUser {
+        log.DefaultLogger.Debug("using username and password", "user", user)
+        newCluster.Authenticator = gocql.PasswordAuthenticator{
+            Username: user,
+            Password: password,
+        }
+    }
 	return &instanceSettings{
-		cluster: gocql.NewCluster(hosts.Host),
+		cluster: newCluster,
 	}, nil
 }
 
