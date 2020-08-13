@@ -164,11 +164,15 @@ func (td *SampleDatasource) query(ctx context.Context, instance *instanceSetting
 	if val, ok := dt["queryText"]; ok {
 	   querytxt := fmt.Sprintf("%v", val)
 	   log.DefaultLogger.Debug("queryText found", "querytxt", querytxt, "instance", instance)
-	   session, err := gocql.NewSession(*instance.cluster)
-	   if err != nil {
-	       log.DefaultLogger.Info("unable to connect to scylla", "err", err, "session", session)
-	       return response
+	   specificHost, ok := dt["queryHost"];
+	   if ok {
+	       log.DefaultLogger.Debug("Using host", "host", specificHost)
 	   }
+       session, err := instance.getSession(specificHost)
+       if err != nil {
+           log.DefaultLogger.Warn("Failed getting session", "err", err, "host", specificHost)
+           return response
+       }
 	   iter := session.Query(querytxt).Iter()
 	   cols := iter.Columns()
 	   for _, c := range iter.Columns() {
@@ -216,6 +220,29 @@ func (td *SampleDatasource) CheckHealth(ctx context.Context, req *backend.CheckH
 
 type instanceSettings struct {
     cluster *gocql.ClusterConfig
+    sessions map[string]*gocql.Session
+}
+
+func (settings *instanceSettings) getSession(hostRef interface{}) (*gocql.Session, error) {
+    var host string
+    if hostRef != nil {
+        host = fmt.Sprintf("%v", hostRef)
+    }
+    if val, ok := settings.sessions[host]; ok {
+        return val, nil
+    }
+    if host == "" {
+        settings.cluster.HostFilter = nil
+    } else {
+        settings.cluster.HostFilter = gocql.WhiteListHostFilter(host)
+    }
+    session, err := gocql.NewSession(*settings.cluster)
+    if err != nil {
+        log.DefaultLogger.Info("unable to connect to scylla", "err", err, "session", session, "host", host)
+        return nil, err
+    }
+    settings.sessions[host] = session
+    return session, nil
 }
 
 func newDataSourceInstance(setting backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
@@ -241,8 +268,10 @@ func newDataSourceInstance(setting backend.DataSourceInstanceSettings) (instance
             Password: password,
         }
     }
+
 	return &instanceSettings{
 		cluster: newCluster,
+		sessions: make(map[string]*gocql.Session),
 	}, nil
 }
 
