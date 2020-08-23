@@ -6,6 +6,7 @@ import (
 	"gopkg.in/inf.v0"
 	"strconv"
 	"math/big"
+	"errors"
 
 	"fmt"
 	"github.com/gocql/gocql"
@@ -14,6 +15,7 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/backend/instancemgmt"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
+	"strings"
 )
 
 // newDatasource returns datasource.ServeOpts.
@@ -164,37 +166,61 @@ func (td *SampleDatasource) query(ctx context.Context, instance *instanceSetting
 	if val, ok := dt["queryText"]; ok {
 	   querytxt := fmt.Sprintf("%v", val)
 	   log.DefaultLogger.Debug("queryText found", "querytxt", querytxt, "instance", instance)
-	   specificHost, ok := dt["queryHost"];
+	   queryHost, ok := dt["queryHost"];
+	   var addHost bool = false
+	   var hostList []string = []string{""}
 	   if ok {
-	       log.DefaultLogger.Debug("Using host", "host", specificHost)
+	       log.DefaultLogger.Debug("Using host", "host", queryHost)
+	       if queryHost != "" {
+	           s, _ := queryHost.(string)
+	           addHost = true
+               hostList = strings.Split(strings.ReplaceAll(strings.ReplaceAll(s, "{", ""), "}",""), ",")
+           }
 	   }
-       session, err := instance.getSession(specificHost)
-       if err != nil {
-           log.DefaultLogger.Warn("Failed getting session", "err", err, "host", specificHost)
-           return response
-       }
-	   iter := session.Query(querytxt).Iter()
-	   cols := iter.Columns()
-	   for _, c := range iter.Columns() {
-            frame.Fields = append(frame.Fields,
-                data.NewField(c.Name, nil, getTypeArray(c.TypeInfo.Type().String())),
-            )
-        }
-        for {
-            // New map each iteration
-            row := make(map[string]interface{})
-            if !iter.MapScan(row) {
-                break
+
+	   for hostIndx, specificHost := range hostList {
+           session, err := instance.getSession(strings.TrimSpace(specificHost))
+           if err != nil {
+               log.DefaultLogger.Warn("Failed getting session", "err", err, "host", specificHost)
+               return response
+           }
+           iter := session.Query(querytxt).Iter()
+           cols := iter.Columns()
+           var numCols int = len(cols)
+           if addHost {
+               numCols++
+           }
+           if hostIndx == 0 {
+               for _, c := range iter.Columns() {
+                    frame.Fields = append(frame.Fields,
+                        data.NewField(c.Name, nil, getTypeArray(c.TypeInfo.Type().String())),
+                    )
+                }
+                if addHost {
+                    frame.Fields = append(frame.Fields,
+                        data.NewField("_host", nil, getTypeArray("string")),
+                    )
+                }
             }
-            vals := make([]interface{}, len(cols))
-            for i, c := range cols {
-                vals[i] = toValue(row[c.Name], c.TypeInfo.Type().String())
+            for {
+                // New map each iteration
+                row := make(map[string]interface{})
+                if !iter.MapScan(row) {
+                    break
+                }
+                vals := make([]interface{}, numCols)
+                for i, c := range cols {
+                    vals[i] = toValue(row[c.Name], c.TypeInfo.Type().String())
+                }
+                log.DefaultLogger.Debug("adding vals", "vals", vals)
+                if addHost {
+                    vals[numCols - 1] = specificHost
+                }
+                frame.AppendRow(vals...)
             }
-            log.DefaultLogger.Debug("adding vals", "vals", vals)
-            frame.AppendRow(vals...)
-        }
-        if err := iter.Close(); err != nil {
-            log.DefaultLogger.Warn(err.Error())
+            if err := iter.Close(); err != nil {
+                log.DefaultLogger.Warn(err.Error())
+            }
         }
     }
 	// create data frame response
@@ -224,6 +250,19 @@ type instanceSettings struct {
 }
 
 func (settings *instanceSettings) getSession(hostRef interface{}) (*gocql.Session, error) {
+    if r := recover(); r != nil {
+        log.DefaultLogger.Info("Recovered in getSession", "error", r)
+        var err error= nil
+        switch x := r.(type) {
+        case string:
+            err = errors.New(x)
+        case error:
+            err = x
+        default:
+            err = errors.New("unknown panic")
+        }
+        return nil, err
+    }
     var host string
     if hostRef != nil {
         host = fmt.Sprintf("%v", hostRef)
@@ -231,6 +270,7 @@ func (settings *instanceSettings) getSession(hostRef interface{}) (*gocql.Sessio
     if val, ok := settings.sessions[host]; ok {
         return val, nil
     }
+    log.DefaultLogger.Debug("getSession", "host", host)
     if host == "" {
         settings.cluster.HostFilter = nil
     } else {
