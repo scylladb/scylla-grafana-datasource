@@ -246,6 +246,7 @@ func (td *SampleDatasource) CheckHealth(ctx context.Context, req *backend.CheckH
 
 type instanceSettings struct {
     cluster *gocql.ClusterConfig
+    authenticator *gocql.PasswordAuthenticator
     sessions map[string]*gocql.Session
 }
 
@@ -269,6 +270,16 @@ func (settings *instanceSettings) getSession(hostRef interface{}) (*gocql.Sessio
     }
     if val, ok := settings.sessions[host]; ok {
         return val, nil
+    }
+    if settings.cluster == nil {
+        if host == "" {
+            return nil, errors.New("no host supplied for connection")
+        }
+        settings.cluster = gocql.NewCluster(host)
+        log.DefaultLogger.Debug("getSession creating cluster from host", "host", host)
+        if settings.authenticator != nil {
+            settings.cluster.Authenticator = *settings.authenticator
+        }
     }
     log.DefaultLogger.Debug("getSession", "host", host)
     if host == "" {
@@ -298,19 +309,26 @@ func newDataSourceInstance(setting backend.DataSourceInstanceSettings) (instance
         return nil, err
     }
     log.DefaultLogger.Info("looking for host", "host", hosts.Host)
-    var newCluster = gocql.NewCluster(hosts.Host)
+    var newCluster *gocql.ClusterConfig = nil
+    var authenticator *gocql.PasswordAuthenticator = nil
     password, hasPassword := secureData["password"]
     user, hasUser := secureData["user"]
     if hasPassword && hasUser {
         log.DefaultLogger.Debug("using username and password", "user", user)
-        newCluster.Authenticator = gocql.PasswordAuthenticator{
+        authenticator = &gocql.PasswordAuthenticator{
             Username: user,
             Password: password,
         }
     }
-
+    if hosts.Host != "" {
+        newCluster = gocql.NewCluster(hosts.Host)
+        if authenticator != nil {
+            newCluster.Authenticator = *authenticator
+        }
+    }
 	return &instanceSettings{
 		cluster: newCluster,
+		authenticator: authenticator,
 		sessions: make(map[string]*gocql.Session),
 	}, nil
 }
