@@ -1,12 +1,12 @@
 {
   "type": "datasource",
   "name": "scylla-datasource",
-  "id": "scylla-db-scylla-datasource",
+  "id": "scylladb-scylla-datasource",
   "metrics": true,
   "backend": true,
   "executable": "gpx_scylla-datasource",
   "info": {
-    "description": "A backend datasource for ScyllaDB and Cassandra",
+    "description": "A backend datasource for ScyllaDB and Apache Cassandra",
     "author": {
       "name": "Amnon Heiman",
       "url": "scylladb.com"

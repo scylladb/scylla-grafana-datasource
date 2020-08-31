@@ -20,7 +20,7 @@ This plugin is not signed yet, Granfa will not allow loading it by default. you 
 
 for example, if you are using Grafana with containers, add:
 ```
--e "GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=scylla-db-scylla-datasource"
+-e "GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=scylladb-scylla-datasource"
 ```
 
 You can now add the scylla data source, the only current configuration is a host in the cluster.
@@ -33,14 +33,14 @@ you can only do select statements, but any valid select would work.
 * Take the master branch that would run Grafana 7
 * Either edit and add the the `ALLOW_PLUGINS` to `start-grafana.sh` or use the command line flag to `start-all.sh`
 ```
-./start-all.sh -s scylla_servers.yml -c "GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=scylla-db-scylla-datasource"
+./start-all.sh -s scylla_servers.yml -c "GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=scylladb-scylla-datasource"
 
 ```
 * If you do not want to configure the data source on every restart, edit `grafana/datasource.yml`
 And add:
 ```
 - name: scylla-datasource
-  type: scylla-db-scylla-datasource
+  type: scylladb-scylla-datasource
   orgId: 1
   isDefault:
   jsonData:
@@ -51,7 +51,7 @@ Replacing `node-ip` with an ip of a node in the cluster.
 To support user and password add `secureJsonData` to `grafana/datasource.yml`
 ```
 - name: scylla-datasource
-  type: scylla-db-scylla-datasource
+  type: scylladb-scylla-datasource
   orgId: 1
   isDefault:
   jsonData:
