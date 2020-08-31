@@ -1,7 +1,7 @@
 {
-  "name": "scylla-db-scylla-datasource",
-  "version": "1.0.0",
-  "description": "A backend datasource for ScyllaDB and Cassandra",
+  "name": "scylladb-scylla-datasource",
+  "version": "0.1.0",
+  "description": "A backend datasource for ScyllaDB and Apache Cassandra",
   "scripts": {
     "build": "grafana-toolkit plugin:build",
     "test": "grafana-toolkit plugin:test",
