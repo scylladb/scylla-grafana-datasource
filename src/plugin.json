@@ -1,15 +1,15 @@
 {
+  "$schema": "https://raw.githubusercontent.com/grafana/grafana/master/docs/sources/developers/plugins/plugin.schema.json",
   "type": "datasource",
   "name": "scylla-datasource",
   "id": "scylladb-scylla-datasource",
   "metrics": true,
   "backend": true,
-  "executable": "gpx_scylla-datasource",
+  "executable": "gpx_scylladb",
   "info": {
     "description": "A backend datasource for ScyllaDB and Apache Cassandra",
     "author": {
-      "name": "Amnon Heiman",
-      "url": "scylladb.com"
+      "name": "Scylladb"
     },
     "keywords": [
       "Scylla",
@@ -37,7 +37,7 @@
     "updated": "%TODAY%"
   },
   "dependencies": {
-    "grafanaVersion": "7.x.x",
+    "grafanaDependency": ">=9.5.3",
     "plugins": []
   }
 }
