@@ -5,7 +5,7 @@ export interface MyQuery extends DataQuery {
   queryHost?: string;
 }
 
-export const defaultQuery: Partial<MyQuery> = {
+export const DEFAULT_QUERY: Partial<MyQuery> = {
   queryText: '',
   queryHost: '',
 };
