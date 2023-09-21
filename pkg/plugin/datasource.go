@@ -1,4 +1,5 @@
-package main
+package plugin
+
 import (
 	"context"
 	"encoding/json"
@@ -11,66 +12,95 @@ import (
 	"fmt"
 	"github.com/gocql/gocql"
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
-	"github.com/grafana/grafana-plugin-sdk-go/backend/datasource"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/instancemgmt"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
 	"strings"
 )
 
-// newDatasource returns datasource.ServeOpts.
-func newDatasource() datasource.ServeOpts {
-    log.DefaultLogger.Debug("Creating new datasource")
-	// creates a instance manager for your plugin. The function passed
-	// into `NewInstanceManger` is called when the instance is created
-	// for the first time or when a datasource configuration changed.
-	im := datasource.NewInstanceManager(newDataSourceInstance)
-	ds := &SampleDatasource{
-		im: im,
+// NewDatasource creates a new datasource instance.
+func NewDatasource(s backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
+	settings, err :=  getDatasourceSettings(s)
+	if err != nil {
+		return nil, err
 	}
 
-	return datasource.ServeOpts{
-		QueryDataHandler:   ds,
-		CheckHealthHandler: ds,
-	}
+	return &Datasource {
+		settings:            settings,
+	}, nil
 }
 
-// SampleDatasource is an example datasource used to scaffold
-// new datasource plugins with an backend.
-type SampleDatasource struct {
-	// The instance manager can help with lifecycle management
-	// of datasource instances in plugins. It's not a requirements
-	// but a best practice that we recommend that you follow.
-	im instancemgmt.InstanceManager
+// Make sure Datasource implements required interfaces.
+var (
+	_ backend.QueryDataHandler      = (*Datasource)(nil)
+	_ backend.CheckHealthHandler    = (*Datasource)(nil)
+	_ instancemgmt.InstanceDisposer = (*Datasource)(nil)
+)
+
+func getDatasourceSettings(setting backend.DataSourceInstanceSettings) (*instanceSettings, error) {
+    type editModel struct {
+        Host string `json:"host"`
+    }
+    var hosts editModel
+    log.DefaultLogger.Debug("newDataSourceInstance", "data", setting.JSONData)
+    var secureData = setting.DecryptedSecureJSONData
+    err := json.Unmarshal(setting.JSONData, &hosts)
+    if err != nil {
+        log.DefaultLogger.Warn("error marsheling", "err", err)
+        return nil, err
+    }
+    log.DefaultLogger.Info("looking for host", "host", hosts.Host)
+    var newCluster *gocql.ClusterConfig = nil
+    var authenticator *gocql.PasswordAuthenticator = nil
+    password, hasPassword := secureData["password"]
+    user, hasUser := secureData["user"]
+    if hasPassword && hasUser {
+        log.DefaultLogger.Debug("using username and password", "user", user)
+        authenticator = &gocql.PasswordAuthenticator{
+            Username: user,
+            Password: password,
+        }
+    }
+    if hosts.Host != "" {
+        newCluster = gocql.NewCluster(hosts.Host)
+        if authenticator != nil {
+            newCluster.Authenticator = *authenticator
+        }
+    }
+    return &instanceSettings{
+            cluster: newCluster,
+            authenticator: authenticator,
+            sessions: make(map[string]*gocql.Session),
+    }, nil
+}
+// Datasource
+type Datasource struct {
+	backend.CallResourceHandler
+	settings *instanceSettings
+}
+
+// Dispose here tells plugin SDK that plugin wants to clean up resources when a new instance
+// created. As soon as datasource settings change detected by SDK old datasource instance will
+// be disposed and a new one will be created using NewDatasource factory function.
+func (d *Datasource) Dispose() {
+	// Clean up datasource instance resources.
 }
 
 // QueryData handles multiple queries and returns multiple responses.
-// req contains the queries []DataQuery (where each query contains RefID as a unique identifer).
+// req contains the queries []DataQuery (where each query contains RefID as a unique identifier).
 // The QueryDataResponse contains a map of RefID to the response for each query, and each response
 // contains Frames ([]*Frame).
-func (td *SampleDatasource) QueryData(ctx context.Context, req *backend.QueryDataRequest) (*backend.QueryDataResponse, error) {
+func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataRequest) (*backend.QueryDataResponse, error) {
     defer func() {
         if r := recover(); r != nil {
             log.DefaultLogger.Info("Recovered in QueryData", "error", r)
         }
     }()
-	log.DefaultLogger.Info("QueryData", "request", req)
-
-	instance, err := td.im.Get(req.PluginContext)
-	if err != nil {
-	   log.DefaultLogger.Info("Failed getting connection", "error", err)
-	   return nil, err
-	}
-	// create response struct
 	response := backend.NewQueryDataResponse()
-	instSetting, ok := instance.(*instanceSettings)
-    if !ok {
-        log.DefaultLogger.Info("Failed getting connection")
-        return nil, nil
-    }
+
 	// loop over queries and execute them individually.
 	for _, q := range req.Queries {
-		res := td.query(ctx, instSetting, q)
+		res := d.query(ctx, req.PluginContext, d.settings, q)
 
 		// save the response in a hashmap
 		// based on with RefID as identifier
@@ -141,24 +171,19 @@ func toValue(val interface{}, typ string) interface{} {
     }
 }
 
-func (td *SampleDatasource) query(ctx context.Context, instance *instanceSettings,  query backend.DataQuery) backend.DataResponse {
-	// Unmarshal the json into our queryModel
+func (td *Datasource) query(_ context.Context, pCtx backend.PluginContext, instance *instanceSettings, query backend.DataQuery) backend.DataResponse {
+	var response backend.DataResponse
+
+	// Unmarshal the JSON into our queryModel.
 	var hosts queryModel
 
-	response := backend.DataResponse{}
-
-	response.Error = json.Unmarshal(query.JSON, &hosts)
+	err := json.Unmarshal(query.JSON, &hosts)
 	var v interface{}
 	json.Unmarshal(query.JSON, &v)
 	dt := v.(map[string]interface{})
-	if response.Error != nil {
-	   log.DefaultLogger.Warn("Failed unmarsheling json", "err", response.Error, "json ", string(query.JSON))
-		return response
-	}
-
-	// Log a warning if `Format` is empty.
-	if hosts.Format == "" {
-		log.DefaultLogger.Info("format is empty. defaulting to time series")
+	if err != nil {
+		log.DefaultLogger.Warn("Failed unmarsheling json", "err", response.Error, "json ", string(query.JSON))
+		return backend.ErrDataResponse(backend.StatusBadRequest, fmt.Sprintf("json unmarshal: %v", err.Error()))
 	}
 
 	// create data frame response
@@ -223,7 +248,6 @@ func (td *SampleDatasource) query(ctx context.Context, instance *instanceSetting
             }
         }
     }
-	// create data frame response
 	// add the frames to the response
 	response.Frames = append(response.Frames, frame)
 
@@ -234,9 +258,13 @@ func (td *SampleDatasource) query(ctx context.Context, instance *instanceSetting
 // The main use case for these health checks is the test button on the
 // datasource configuration page which allows users to verify that
 // a datasource is working as expected.
-func (td *SampleDatasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRequest) (*backend.CheckHealthResult, error) {
+func (d *Datasource) CheckHealth(_ context.Context, req *backend.CheckHealthRequest) (*backend.CheckHealthResult, error) {
 	var status = backend.HealthStatusOk
 	var message = "Data source is working"
+
+	// TBD: On error we should return something meaningful
+	//status = backend.HealthStatusError
+	//message = "An error message"
 
 	return &backend.CheckHealthResult{
 		Status:  status,
@@ -281,7 +309,7 @@ func (settings *instanceSettings) getSession(hostRef interface{}) (*gocql.Sessio
             settings.cluster.Authenticator = *settings.authenticator
         }
     }
-    log.DefaultLogger.Debug("getSession", "host", host)
+    log.DefaultLogger.Debug("getSession, creating new session", "host", host)
     if host == "" {
         settings.cluster.HostFilter = nil
     } else {
@@ -296,44 +324,4 @@ func (settings *instanceSettings) getSession(hostRef interface{}) (*gocql.Sessio
     return session, nil
 }
 
-func newDataSourceInstance(setting backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
-    type editModel struct {
-        Host string `json:"host"`
-    }
-    var hosts editModel
-    log.DefaultLogger.Debug("newDataSourceInstance", "data", setting.JSONData)
-    var secureData = setting.DecryptedSecureJSONData
-    err := json.Unmarshal(setting.JSONData, &hosts)
-    if err != nil {
-        log.DefaultLogger.Warn("error marsheling", "err", err)
-        return nil, err
-    }
-    log.DefaultLogger.Info("looking for host", "host", hosts.Host)
-    var newCluster *gocql.ClusterConfig = nil
-    var authenticator *gocql.PasswordAuthenticator = nil
-    password, hasPassword := secureData["password"]
-    user, hasUser := secureData["user"]
-    if hasPassword && hasUser {
-        log.DefaultLogger.Debug("using username and password", "user", user)
-        authenticator = &gocql.PasswordAuthenticator{
-            Username: user,
-            Password: password,
-        }
-    }
-    if hosts.Host != "" {
-        newCluster = gocql.NewCluster(hosts.Host)
-        if authenticator != nil {
-            newCluster.Authenticator = *authenticator
-        }
-    }
-	return &instanceSettings{
-		cluster: newCluster,
-		authenticator: authenticator,
-		sessions: make(map[string]*gocql.Session),
-	}, nil
-}
 
-func (s *instanceSettings) Dispose() {
-	// Called before creatinga a new instance to allow plugin authors
-	// to cleanup.
-}
