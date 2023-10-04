@@ -1,5 +1,5 @@
 import React, { ChangeEvent } from 'react';
-import { InlineField, Input } from '@grafana/ui';
+import { InlineField, Input, Checkbox} from '@grafana/ui';
 import { QueryEditorProps } from '@grafana/data';
 import { DataSource } from '../datasource';
 import { MyDataSourceOptions, MyQuery } from '../types';
@@ -17,15 +17,21 @@ export function QueryEditor({ query, onChange, onRunQuery }: Props) {
     onRunQuery();
   };
 
-  const { queryText, queryHost } = query;
+  const onallHostChange = (event: ChangeEvent<HTMLInputElement>) => {
+    onChange({ ...query, allHosts: event.target.checked });
+    // executes the query
+    onRunQuery();
+  };
+  const { queryText, queryHost, allHosts} = query;
 
   return (
     <div className="gf-form">
-      <InlineField label="Host">
-        <Input onChange={onHostChange} value={queryHost} width={8} />
-      </InlineField>
       <InlineField label="Query Text" labelWidth={16} tooltip="A CQL Query">
-        <Input onChange={onQueryTextChange} value={queryText || ''} />
+        <Input onChange={onQueryTextChange} value={queryText || ''}  width={60}/>
+      </InlineField>
+	  <Checkbox onChange={onallHostChange} value={allHosts} label="All host" description="Read from all hosts"/>
+      <InlineField label="Hosts">
+        <Input onChange={onHostChange} value={queryHost} width={8} />
       </InlineField>
     </div>
   );

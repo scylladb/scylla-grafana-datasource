@@ -12,6 +12,7 @@ export class DataSource extends DataSourceWithBackend<MyQuery, MyDataSourceOptio
       ...query,
       queryText: query.queryText ? templateSrv.replace(query.queryText) : '',
       queryHost: query.queryHost ? templateSrv.replace(query.queryHost) : '',
+      allHosts: query.allHosts ? templateSrv.replace(query.allHosts? "true" : "false") === "true" : false,
     };
   }
   getDefaultQuery(_: CoreApp): Partial<MyQuery> {
