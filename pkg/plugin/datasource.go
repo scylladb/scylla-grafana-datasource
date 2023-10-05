@@ -204,7 +204,7 @@ func (td *Datasource) query(_ context.Context, pCtx backend.PluginContext, insta
 		}
 
 		for hostIndx, specificHost := range hostList {
-			session, err := instance.getSession(strings.TrimSpace(specificHost))
+			session, err := instance.getSession(strings.TrimSpace(specificHost), addHost)
 			if err != nil {
 				log.DefaultLogger.Warn("Failed getting session", "err", err, "host", specificHost)
 				return response
@@ -264,7 +264,7 @@ func (td *Datasource) query(_ context.Context, pCtx backend.PluginContext, insta
 func (d *Datasource) CheckHealth(_ context.Context, req *backend.CheckHealthRequest) (*backend.CheckHealthResult, error) {
 	var status = backend.HealthStatusOk
 	var message = "Data source is working"
-	_, err := d.settings.getSession("")
+	_, err := d.settings.getSession("", false)
 	if err != nil {
 		log.DefaultLogger.Warn("Failed getting session", "err", err)
 		return &backend.CheckHealthResult{
@@ -289,7 +289,7 @@ type instanceSettings struct {
 	clusters      map[string]*gocql.ClusterConfig
 }
 
-func (settings *instanceSettings) getSession(hostRef interface{}) (*gocql.Session, error) {
+func (settings *instanceSettings) getSession(hostRef interface{}, specificHost bool) (*gocql.Session, error) {
 	if r := recover(); r != nil {
 		log.DefaultLogger.Info("Recovered in getSession", "error", r)
 		var err error = nil
@@ -327,7 +327,12 @@ func (settings *instanceSettings) getSession(hostRef interface{}) (*gocql.Sessio
 			// good opportunity to create a default cluster
 			settings.cluster = gocql.NewCluster(host)
 		}
-		cluster = settings.clusters[host]
+		if specificHost {
+			cluster = settings.clusters[host]
+		} else {
+			cluster = settings.cluster
+		}
+
 	}
 	log.DefaultLogger.Debug("getSession, creating new session", "host", host)
 	session, err := gocql.NewSession(*cluster)
