@@ -1,7 +1,6 @@
-import { DataSourceInstanceSettings } from '@grafana/data';
-import { DataSourceWithBackend } from '@grafana/runtime';
-import { MyDataSourceOptions, MyQuery } from './types';
-import { getTemplateSrv } from '@grafana/runtime';
+import { DataSourceInstanceSettings, CoreApp } from '@grafana/data';
+import { DataSourceWithBackend, getTemplateSrv } from '@grafana/runtime';
+import { MyQuery, MyDataSourceOptions, DEFAULT_QUERY } from './types';
 
 export class DataSource extends DataSourceWithBackend<MyQuery, MyDataSourceOptions> {
   constructor(instanceSettings: DataSourceInstanceSettings<MyDataSourceOptions>) {
@@ -13,6 +12,10 @@ export class DataSource extends DataSourceWithBackend<MyQuery, MyDataSourceOptio
       ...query,
       queryText: query.queryText ? templateSrv.replace(query.queryText) : '',
       queryHost: query.queryHost ? templateSrv.replace(query.queryHost) : '',
+      allHosts: query.allHosts ? templateSrv.replace(query.allHosts? "true" : "false") === "true" : false,
     };
+  }
+  getDefaultQuery(_: CoreApp): Partial<MyQuery> {
+    return DEFAULT_QUERY
   }
 }
