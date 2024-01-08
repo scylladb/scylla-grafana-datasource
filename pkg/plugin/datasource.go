@@ -19,7 +19,7 @@ import (
 )
 
 // NewDatasource creates a new datasource instance.
-func NewDatasource(s backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
+func NewDatasource(_ context.Context, s backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
 	settings, err := getDatasourceSettings(s)
 	if err != nil {
 		return nil, err
