@@ -1,6 +1,6 @@
 {
   "name": "scylladb-scylla-datasource",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A backend datasource for ScyllaDB and Apache Cassandra",
   "scripts": {
     "build": "webpack -c ./.config/webpack/webpack.config.ts --env production",
