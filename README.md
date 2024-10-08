@@ -87,21 +87,21 @@ A data source backend plugin consists of both frontend and backend components.
 ### Frontend
 
 1. Install dependencies
-```BASH
-yarn install
+
+```bash
+npm install
 ```
 
-2. Build plugin in development mode or run in watch mode
-```BASH
-yarn dev
+2. Build plugin in development mode and run in watch mode
+
+```bash
+npm run dev
 ```
-or
-```BASH
-yarn watch
-```
+
 3. Build plugin in production mode
-```BASH
-yarn build
+
+```bash
+npm run build
 ```
 
 ### Backend
@@ -110,7 +110,9 @@ yarn build
 
 ```bash
 go get -u github.com/grafana/grafana-plugin-sdk-go
+go mod tidy
 ```
+
 
 2. Build backend plugin binaries for Linux, Windows and Darwin:
 ```BASH
