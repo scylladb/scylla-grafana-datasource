@@ -1,12 +1,10 @@
 module github.com/scylladb/scylladb
 
-go 1.25.0
-
-toolchain go1.25.3
+go 1.25
 
 require (
-	github.com/gocql/gocql v1.16.1
 	github.com/grafana/grafana-plugin-sdk-go v0.281.0
+	github.com/gocql/gocql v1.17.1
 	gopkg.in/inf.v0 v0.9.1
 )
 
@@ -90,4 +88,4 @@ require (
 	gopkg.in/fsnotify/fsnotify.v1 v1.4.7 // indirect
 )
 
-replace github.com/gocql/gocql => github.com/scylladb/gocql v1.16.1
+replace github.com/gocql/gocql => github.com/scylladb/gocql v1.17.1
