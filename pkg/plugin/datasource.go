@@ -4,18 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"gopkg.in/inf.v0"
+	"fmt"
 	"math/big"
+	"net"
 	"strconv"
+	"strings"
 	"time"
 
-	"fmt"
+	"gopkg.in/inf.v0"
+
 	"github.com/gocql/gocql"
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/instancemgmt"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
-	"strings"
 )
 
 // NewDatasource creates a new datasource instance.
@@ -207,6 +209,7 @@ func (td *Datasource) query(_ context.Context, pCtx backend.PluginContext, insta
 			session, err := instance.getSession(strings.TrimSpace(specificHost), addHost)
 			if err != nil {
 				log.DefaultLogger.Warn("Failed getting session", "err", err, "host", specificHost)
+				response.Error = err
 				return response
 			}
 			iter := session.Query(querytxt).Iter()
@@ -282,6 +285,29 @@ func (d *Datasource) CheckHealth(_ context.Context, req *backend.CheckHealthRequ
 	}, nil
 }
 
+// customAddressTranslator forces the driver to use a specific target IP
+// instead of the addresses discovered through gossip
+type customAddressTranslator struct {
+	targetIP string
+	port     int
+}
+
+func (t *customAddressTranslator) Translate(ip net.IP, port int) (net.IP, int) {
+	log.DefaultLogger.Debug("Address translation", "from", ip.String(), "fromPort", port, "to", t.targetIP, "toPort", t.port)
+
+	// First, try to parse targetIP as a literal IP address.
+	if parsedIP := net.ParseIP(t.targetIP); parsedIP != nil {
+		return parsedIP, t.port
+	}
+	// If parsing fails, try to resolve targetIP as a hostname.
+	if addrs, err := net.LookupIP(t.targetIP); err == nil && len(addrs) > 0 {
+		return addrs[0], t.port
+	}
+	// As a last resort, fall back to the original IP/port to avoid returning a nil IP.
+	log.DefaultLogger.Warn("Failed to translate address, falling back to original", "targetIP", t.targetIP, "originalIP", ip.String(), "originalPort", port)
+	return ip, port
+}
+
 type instanceSettings struct {
 	cluster       *gocql.ClusterConfig
 	authenticator *gocql.PasswordAuthenticator
@@ -318,7 +344,113 @@ func (settings *instanceSettings) getSession(hostRef interface{}, specificHost b
 		cluster = settings.cluster
 	} else if settings.clusters[host] == nil {
 		settings.clusters[host] = gocql.NewCluster(host)
-		settings.clusters[host].HostFilter = gocql.WhiteListHostFilter(host)
+		// Custom host filter that handles both public and private IPs
+		targetIP := host
+		// Remove port if present (host might be "ip:port" or "[ipv6]:port")
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			targetIP = h
+		}
+		log.DefaultLogger.Debug("Setting up host filter", "targetIP", targetIP, "originalHost", host)
+
+		// Configure cluster to handle private/public IP scenarios
+		// IgnorePeerAddr = true prevents the driver from connecting to addresses discovered via gossip
+		// and forces it to only use the addresses we explicitly provided
+		settings.clusters[host].IgnorePeerAddr = true
+		// DisableInitialHostLookup = true to use the exact host we specified
+		settings.clusters[host].DisableInitialHostLookup = true
+
+		// Add connection timeout to avoid hanging indefinitely
+		settings.clusters[host].ConnectTimeout = 5 * time.Second
+		settings.clusters[host].Timeout = 10 * time.Second
+
+		// Extract port from host if present
+		port := 9042
+		if _, portStr, err := net.SplitHostPort(host); err == nil {
+			if p, err := strconv.Atoi(portStr); err == nil {
+				port = p
+			}
+		}
+
+		// Set up custom address translator to force connections to use the target IP
+		settings.clusters[host].AddressTranslator = &customAddressTranslator{
+			targetIP: targetIP,
+			port:     port,
+		}
+
+		// Custom host filter to force using the target IP
+		// This ensures we connect to the private IP even if the driver discovers public IPs
+		settings.clusters[host].HostFilter = gocql.HostFilterFunc(func(hostInfo *gocql.HostInfo) bool {
+			preferredIP := hostInfo.PreferredIP().String()
+			rpcAddr := hostInfo.RPCAddress().String()
+			broadcastAddr := hostInfo.BroadcastAddress().String()
+			listenAddr := hostInfo.ListenAddress().String()
+
+			// Log all available hosts for debugging
+			log.DefaultLogger.Debug("Available host detected",
+				"preferredIP", preferredIP,
+				"rpcAddress", rpcAddr,
+				"broadcastAddress", broadcastAddr,
+				"listenAddress", listenAddr,
+				"targetIP", targetIP,
+				"hostID", hostInfo.HostID())
+
+			// Extract and normalize IPs from addresses (they might include port)
+			preferredIPNorm := preferredIP
+			if h, _, err := net.SplitHostPort(preferredIP); err == nil {
+				preferredIPNorm = h
+			}
+
+			rpcIP := rpcAddr
+			if h, _, err := net.SplitHostPort(rpcAddr); err == nil {
+				rpcIP = h
+			}
+
+			broadcastIP := broadcastAddr
+			if h, _, err := net.SplitHostPort(broadcastAddr); err == nil {
+				broadcastIP = h
+			}
+
+			listenIP := listenAddr
+			if h, _, err := net.SplitHostPort(listenAddr); err == nil {
+				listenIP = h
+			}
+
+			// Convert targetIP to net.IP once for efficient comparison
+			targetIPParsed := net.ParseIP(targetIP)
+
+			// Helper function to check if two IPs match (handles IPv6 normalization)
+			ipMatches := func(ip1Str string, ip2 net.IP) bool {
+				if ip2 == nil {
+					return false
+				}
+				ip1 := net.ParseIP(ip1Str)
+				if ip1 == nil {
+					return false
+				}
+				return ip1.Equal(ip2)
+			}
+
+			// Check if target IP matches any of the addresses
+			if ipMatches(preferredIPNorm, targetIPParsed) || ipMatches(rpcIP, targetIPParsed) ||
+				ipMatches(broadcastIP, targetIPParsed) || ipMatches(listenIP, targetIPParsed) {
+				log.DefaultLogger.Debug("Host matched - connection allowed",
+					"targetIP", targetIP,
+					"preferredIP", preferredIPNorm,
+					"rpcIP", rpcIP,
+					"broadcastIP", broadcastIP,
+					"listenIP", listenIP)
+				return true
+			}
+
+			log.DefaultLogger.Debug("Host filtered out",
+				"targetIP", targetIP,
+				"preferredIP", preferredIPNorm,
+				"rpcIP", rpcIP,
+				"broadcastIP", broadcastIP,
+				"listenIP", listenIP)
+			return false
+		})
+
 		log.DefaultLogger.Debug("getSession creating cluster from host", "host", host)
 		if settings.authenticator != nil {
 			settings.clusters[host].Authenticator = *settings.authenticator
@@ -326,20 +458,23 @@ func (settings *instanceSettings) getSession(hostRef interface{}, specificHost b
 		if settings.cluster == nil {
 			// good opportunity to create a default cluster
 			settings.cluster = gocql.NewCluster(host)
-		}
-		if specificHost {
-			cluster = settings.clusters[host]
-		} else {
-			cluster = settings.cluster
+			if settings.authenticator != nil {
+				settings.cluster.Authenticator = *settings.authenticator
+			}
 		}
 
 	}
-	log.DefaultLogger.Debug("getSession, creating new session", "host", host)
+	if host == "" {
+		cluster = settings.cluster
+	} else {
+		cluster = settings.clusters[host]
+	}
 	session, err := gocql.NewSession(*cluster)
 	if err != nil {
-		log.DefaultLogger.Info("unable to connect to scylla", "err", err, "session", session, "host", host)
+		log.DefaultLogger.Info("unable to connect to scylla", "err", err, "host", host, "clusterHosts", cluster.Hosts)
 		return nil, err
 	}
+	log.DefaultLogger.Debug("Session created successfully", "host", host)
 	settings.sessions[host] = session
 	return session, nil
 }
