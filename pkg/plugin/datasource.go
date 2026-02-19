@@ -68,6 +68,7 @@ func getDatasourceSettings(setting backend.DataSourceInstanceSettings) (*instanc
 		if authenticator != nil {
 			newCluster.Authenticator = *authenticator
 		}
+		newCluster.Consistency = gocql.LocalOne
 	}
 	return &instanceSettings{
 		cluster:       newCluster,
@@ -370,6 +371,7 @@ func (settings *instanceSettings) getSession(hostRef interface{}, specificHost b
 		// IgnorePeerAddr = true prevents the driver from connecting to addresses discovered via gossip
 		// and forces it to only use the addresses we explicitly provided
 		settings.clusters[host].IgnorePeerAddr = true
+		settings.clusters[host].Consistency = gocql.LocalOne
 		// DisableInitialHostLookup = true to use the exact host we specified
 		settings.clusters[host].DisableInitialHostLookup = true
 
@@ -497,6 +499,7 @@ func (settings *instanceSettings) getSession(hostRef interface{}, specificHost b
 			if settings.authenticator != nil {
 				settings.cluster.Authenticator = *settings.authenticator
 			}
+			settings.cluster.Consistency = gocql.LocalOne
 		}
 
 	}
