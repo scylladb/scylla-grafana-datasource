@@ -352,6 +352,20 @@ func (settings *instanceSettings) getSession(hostRef interface{}, specificHost b
 		}
 		log.DefaultLogger.Debug("Setting up host filter", "targetIP", targetIP, "originalHost", host)
 
+		// Pre-resolve target host to one or more IPs for robust matching.
+		targetIPs := make([]net.IP, 0, 2)
+		if parsed := net.ParseIP(targetIP); parsed != nil {
+			targetIPs = append(targetIPs, parsed)
+		} else if addrs, err := net.LookupIP(targetIP); err == nil {
+			targetIPs = append(targetIPs, addrs...)
+		}
+		targetIPSet := make(map[string]struct{}, len(targetIPs))
+		for _, resolvedIP := range targetIPs {
+			if resolvedIP != nil {
+				targetIPSet[resolvedIP.String()] = struct{}{}
+			}
+		}
+
 		// Configure cluster to handle private/public IP scenarios
 		// IgnorePeerAddr = true prevents the driver from connecting to addresses discovered via gossip
 		// and forces it to only use the addresses we explicitly provided
@@ -380,6 +394,11 @@ func (settings *instanceSettings) getSession(hostRef interface{}, specificHost b
 		// Custom host filter to force using the target IP
 		// This ensures we connect to the private IP even if the driver discovers public IPs
 		settings.clusters[host].HostFilter = gocql.HostFilterFunc(func(hostInfo *gocql.HostInfo) bool {
+			if hostInfo == nil {
+				log.DefaultLogger.Debug("Host info is nil - connection allowed", "targetIP", targetIP)
+				return true
+			}
+
 			preferredIP := hostInfo.PreferredIP().String()
 			rpcAddr := hostInfo.RPCAddress().String()
 			broadcastAddr := hostInfo.BroadcastAddress().String()
@@ -394,52 +413,69 @@ func (settings *instanceSettings) getSession(hostRef interface{}, specificHost b
 				"targetIP", targetIP,
 				"hostID", hostInfo.HostID())
 
-			// Extract and normalize IPs from addresses (they might include port)
-			preferredIPNorm := preferredIP
-			if h, _, err := net.SplitHostPort(preferredIP); err == nil {
-				preferredIPNorm = h
-			}
-
-			rpcIP := rpcAddr
-			if h, _, err := net.SplitHostPort(rpcAddr); err == nil {
-				rpcIP = h
-			}
-
-			broadcastIP := broadcastAddr
-			if h, _, err := net.SplitHostPort(broadcastAddr); err == nil {
-				broadcastIP = h
-			}
-
-			listenIP := listenAddr
-			if h, _, err := net.SplitHostPort(listenAddr); err == nil {
-				listenIP = h
-			}
-
-			// Convert targetIP to net.IP once for efficient comparison
-			targetIPParsed := net.ParseIP(targetIP)
-
-			// Helper function to check if two IPs match (handles IPv6 normalization)
-			ipMatches := func(ip1Str string, ip2 net.IP) bool {
-				if ip2 == nil {
-					return false
+			normalizeAddr := func(addr string) string {
+				if addr == "" || addr == "<nil>" {
+					return ""
 				}
-				ip1 := net.ParseIP(ip1Str)
-				if ip1 == nil {
-					return false
+				if h, _, err := net.SplitHostPort(addr); err == nil {
+					return h
 				}
-				return ip1.Equal(ip2)
+				return addr
 			}
 
-			// Check if target IP matches any of the addresses
-			if ipMatches(preferredIPNorm, targetIPParsed) || ipMatches(rpcIP, targetIPParsed) ||
-				ipMatches(broadcastIP, targetIPParsed) || ipMatches(listenIP, targetIPParsed) {
-				log.DefaultLogger.Debug("Host matched - connection allowed",
+			preferredIPNorm := normalizeAddr(preferredIP)
+			rpcIP := normalizeAddr(rpcAddr)
+			broadcastIP := normalizeAddr(broadcastAddr)
+			listenIP := normalizeAddr(listenAddr)
+
+			candidateAddrs := []string{preferredIPNorm, rpcIP, broadcastIP, listenIP}
+			candidateIPs := make([]net.IP, 0, len(candidateAddrs))
+			for _, candidate := range candidateAddrs {
+				if candidate == "" {
+					continue
+				}
+				if parsed := net.ParseIP(candidate); parsed != nil {
+					candidateIPs = append(candidateIPs, parsed)
+				}
+			}
+
+			// Some driver states expose host entries with incomplete metadata.
+			// In that case, don't block session creation.
+			if len(candidateIPs) == 0 {
+				log.DefaultLogger.Debug("Host metadata incomplete - connection allowed",
 					"targetIP", targetIP,
 					"preferredIP", preferredIPNorm,
 					"rpcIP", rpcIP,
 					"broadcastIP", broadcastIP,
 					"listenIP", listenIP)
 				return true
+			}
+
+			for _, candidateIP := range candidateIPs {
+				if _, ok := targetIPSet[candidateIP.String()]; ok {
+					log.DefaultLogger.Debug("Host matched - connection allowed",
+						"targetIP", targetIP,
+						"preferredIP", preferredIPNorm,
+						"rpcIP", rpcIP,
+						"broadcastIP", broadcastIP,
+						"listenIP", listenIP)
+					return true
+				}
+			}
+
+			// Fallback for unresolved target hostnames.
+			if len(targetIPs) == 0 {
+				for _, candidate := range candidateAddrs {
+					if candidate == targetIP {
+						log.DefaultLogger.Debug("Host matched by hostname - connection allowed",
+							"targetIP", targetIP,
+							"preferredIP", preferredIPNorm,
+							"rpcIP", rpcIP,
+							"broadcastIP", broadcastIP,
+							"listenIP", listenIP)
+						return true
+					}
+				}
 			}
 
 			log.DefaultLogger.Debug("Host filtered out",
