@@ -9,6 +9,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/inf.v0"
@@ -94,7 +95,8 @@ func getDatasourceSettings(setting backend.DataSourceInstanceSettings) (*instanc
 	}
 	log.DefaultLogger.Info("looking for host", "host", hosts.Host)
 	connectionScope := normalizeConnectionScope(hosts.ConnectionScope)
-	if connectionScope != connectionScopeAny && strings.TrimSpace(hosts.Host) == "" {
+	configuredHosts := parseHostList(hosts.Host)
+	if connectionScope != connectionScopeAny && len(configuredHosts) == 0 {
 		return nil, errors.New("host list cannot be empty when connection scope is not any")
 	}
 	var newCluster *gocql.ClusterConfig = nil
@@ -112,22 +114,26 @@ func getDatasourceSettings(setting backend.DataSourceInstanceSettings) (*instanc
 	if err != nil {
 		return nil, err
 	}
-	if hosts.Host != "" {
-		newCluster = gocql.NewCluster(hosts.Host)
+	if len(configuredHosts) > 0 {
+		newCluster = gocql.NewCluster(configuredHosts...)
 		if authenticator != nil {
 			newCluster.Authenticator = *authenticator
 		}
 		newCluster.SslOpts = sslOpts
 		newCluster.Consistency = gocql.LocalOne
+		switch connectionScope {
+		case connectionScopeSpecified:
+			newCluster.HostFilter = gocql.WhiteListHostFilter(configuredHosts...)
+		default:
+			newCluster.HostFilter = gocql.AcceptAllFilter()
+		}
 	}
 	return &instanceSettings{
 		cluster:         newCluster,
 		authenticator:   authenticator,
-		sslOpts:         sslOpts,
-		sessions:        make(map[string]*gocql.Session),
-		clusters:        make(map[string]*gocql.ClusterConfig),
 		host:            hosts.Host,
 		connectionScope: connectionScope,
+		configuredHosts: configuredHosts,
 	}, nil
 }
 
@@ -141,7 +147,9 @@ type Datasource struct {
 // created. As soon as datasource settings change detected by SDK old datasource instance will
 // be disposed and a new one will be created using NewDatasource factory function.
 func (d *Datasource) Dispose() {
-	// Clean up datasource instance resources.
+	if d.settings != nil {
+		d.settings.close()
+	}
 }
 
 // QueryData handles multiple queries and returns multiple responses.
@@ -252,21 +260,98 @@ func (td *Datasource) query(_ context.Context, pCtx backend.PluginContext, insta
 		queryHost, hasHost := dt["queryHost"]
 		allHosts, hasAllHosts := dt["allHosts"]
 		var addHost bool = hasAllHosts && allHosts.(bool)
-		var hostList []string = []string{""}
+		var hostList []string
 		if hasHost && queryHost != "" {
 			log.DefaultLogger.Debug("Using host", "host", queryHost)
 			s, _ := queryHost.(string)
-			hostList = strings.Split(strings.ReplaceAll(strings.ReplaceAll(s, "{", ""), "}", ""), ",")
+			hostList = parseHostList(s)
+		}
+		if instance.connectionScope == connectionScopeSpecified && len(hostList) == 0 {
+			response.Error = errors.New("query host is required when connection scope is specified_list")
+			return response
 		}
 
-		for hostIndx, specificHost := range hostList {
-			session, err := instance.getSession(strings.TrimSpace(specificHost), addHost)
-			if err != nil {
-				log.DefaultLogger.Warn("Failed getting session", "err", err, "host", specificHost)
-				response.Error = err
-				return response
+		type queryTarget struct {
+			hostID  string
+			hostRef string
+		}
+
+		session, err := instance.getSession()
+		if err != nil {
+			log.DefaultLogger.Warn("Failed getting session", "err", err)
+			response.Error = err
+			return response
+		}
+
+		targets := make([]queryTarget, 0)
+		if len(hostList) == 0 {
+			if addHost {
+				for _, hostInfo := range session.GetHosts() {
+					hostRef := hostInfoAddress(hostInfo)
+					if hostRef == "" {
+						continue
+					}
+					if instance.connectionScope == connectionScopeSpecified && !instance.isConfiguredHost(hostRef) {
+						continue
+					}
+					targets = append(targets, queryTarget{hostID: hostInfo.HostID(), hostRef: hostRef})
+				}
+				if len(targets) == 0 {
+					response.Error = errors.New("no eligible hosts found for all-host query")
+					return response
+				}
+			} else {
+				targets = append(targets, queryTarget{})
 			}
-			iter := session.Query(querytxt).Iter()
+		} else {
+			for _, specificHost := range hostList {
+				hostRef := strings.TrimSpace(specificHost)
+				if hostRef == "" {
+					continue
+				}
+				switch instance.connectionScope {
+				case connectionScopeSpecified:
+					if !instance.isConfiguredHost(hostRef) {
+						response.Error = fmt.Errorf("host %q is not allowed by connection scope", hostRef)
+						return response
+					}
+				case connectionScopeClusterOnly:
+					inCluster, inClusterErr := instance.isHostInCluster(hostRef)
+					if inClusterErr != nil {
+						response.Error = inClusterErr
+						return response
+					}
+					if !inCluster {
+						response.Error = fmt.Errorf("host %q is not part of the cluster", hostRef)
+						return response
+					}
+				}
+
+				hostID, found, hostErr := instance.getHostIDByAddress(hostRef)
+				if hostErr != nil {
+					response.Error = hostErr
+					return response
+				}
+				if !found {
+					response.Error = fmt.Errorf("could not resolve host %q in cluster metadata", hostRef)
+					return response
+				}
+				targets = append(targets, queryTarget{hostID: hostID, hostRef: hostRef})
+				if !addHost {
+					break
+				}
+			}
+			if len(targets) == 0 {
+				targets = append(targets, queryTarget{})
+			}
+		}
+
+		for hostIndx, target := range targets {
+			q := session.Query(querytxt)
+			if target.hostID != "" {
+				q = q.SetHostID(target.hostID)
+			}
+			iter := q.Iter()
 			cols := iter.Columns()
 			var numCols int = len(cols)
 			if addHost {
@@ -296,7 +381,7 @@ func (td *Datasource) query(_ context.Context, pCtx backend.PluginContext, insta
 				}
 				log.DefaultLogger.Debug("adding vals", "vals", vals)
 				if addHost {
-					vals[numCols-1] = specificHost
+					vals[numCols-1] = target.hostRef
 				}
 				frame.AppendRow(vals...)
 			}
@@ -321,7 +406,7 @@ func (td *Datasource) query(_ context.Context, pCtx backend.PluginContext, insta
 func (d *Datasource) CheckHealth(_ context.Context, req *backend.CheckHealthRequest) (*backend.CheckHealthResult, error) {
 	var status = backend.HealthStatusOk
 	var message = "Data source is working"
-	_, err := d.settings.getSession("", false)
+	_, err := d.settings.getSession()
 	if err != nil {
 		log.DefaultLogger.Warn("Failed getting session", "err", err)
 		return &backend.CheckHealthResult{
@@ -339,40 +424,213 @@ func (d *Datasource) CheckHealth(_ context.Context, req *backend.CheckHealthRequ
 	}, nil
 }
 
-// customAddressTranslator forces the driver to use a specific target IP
-// instead of the addresses discovered through gossip
-type customAddressTranslator struct {
-	targetIP string
-	port     int
-}
-
-func (t *customAddressTranslator) Translate(ip net.IP, port int) (net.IP, int) {
-	log.DefaultLogger.Debug("Address translation", "from", ip.String(), "fromPort", port, "to", t.targetIP, "toPort", t.port)
-
-	// First, try to parse targetIP as a literal IP address.
-	if parsedIP := net.ParseIP(t.targetIP); parsedIP != nil {
-		return parsedIP, t.port
-	}
-	// If parsing fails, try to resolve targetIP as a hostname.
-	if addrs, err := net.LookupIP(t.targetIP); err == nil && len(addrs) > 0 {
-		return addrs[0], t.port
-	}
-	// As a last resort, fall back to the original IP/port to avoid returning a nil IP.
-	log.DefaultLogger.Warn("Failed to translate address, falling back to original", "targetIP", t.targetIP, "originalIP", ip.String(), "originalPort", port)
-	return ip, port
-}
-
 type instanceSettings struct {
-	cluster         *gocql.ClusterConfig
+	cluster *gocql.ClusterConfig
+	// sessionMu guards session and disposed. The session is created lazily on
+	// first use, and a datasource instance serves concurrent query and health
+	// requests, so without this two callers could each build a session and one
+	// of them would be leaked when the second overwrote the pointer.
+	sessionMu       sync.Mutex
+	session         *gocql.Session
+	disposed        bool
 	authenticator   *gocql.PasswordAuthenticator
-	sslOpts         *gocql.SslOptions
-	sessions        map[string]*gocql.Session
-	clusters        map[string]*gocql.ClusterConfig
 	host            string
 	connectionScope string
+	configuredHosts []string
 }
 
-func (settings *instanceSettings) getSession(hostRef interface{}, specificHost bool) (*gocql.Session, error) {
+func parseHostList(hosts string) []string {
+	cleanHosts := strings.NewReplacer("{", "", "}", "").Replace(hosts)
+	parts := strings.Split(cleanHosts, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
+}
+
+func normalizeHostAddress(addr string) string {
+	trimmed := strings.TrimSpace(addr)
+	if trimmed == "" || trimmed == "<nil>" {
+		return ""
+	}
+	if h, _, err := net.SplitHostPort(trimmed); err == nil {
+		return h
+	}
+	return trimmed
+}
+
+func resolveHostSet(host string) map[string]struct{} {
+	targetHost := normalizeHostAddress(host)
+	resolved := make(map[string]struct{})
+	if targetHost == "" {
+		return resolved
+	}
+
+	if parsed := net.ParseIP(targetHost); parsed != nil {
+		resolved[parsed.String()] = struct{}{}
+		return resolved
+	}
+
+	if addrs, err := net.LookupIP(targetHost); err == nil {
+		for _, ip := range addrs {
+			if ip != nil {
+				resolved[ip.String()] = struct{}{}
+			}
+		}
+	}
+
+	return resolved
+}
+
+func hostsMatch(candidate string, target string) bool {
+	normalizedCandidate := normalizeHostAddress(candidate)
+	normalizedTarget := normalizeHostAddress(target)
+	if normalizedCandidate == "" || normalizedTarget == "" {
+		return false
+	}
+
+	targetIPSet := resolveHostSet(normalizedTarget)
+	if len(targetIPSet) == 0 {
+		return normalizedCandidate == normalizedTarget
+	}
+
+	candidateIPSet := resolveHostSet(normalizedCandidate)
+	for ip := range candidateIPSet {
+		if _, ok := targetIPSet[ip]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func hostInfoAddress(hostInfo *gocql.HostInfo) string {
+	if hostInfo == nil {
+		return ""
+	}
+	candidates := []string{
+		hostInfo.PreferredIP().String(),
+		hostInfo.RPCAddress().String(),
+		hostInfo.BroadcastAddress().String(),
+		hostInfo.ListenAddress().String(),
+		hostInfo.ConnectAddress().String(),
+		hostInfo.Peer().String(),
+	}
+	for _, candidate := range candidates {
+		normalized := normalizeHostAddress(candidate)
+		if normalized != "" {
+			return normalized
+		}
+	}
+	return ""
+}
+
+func (settings *instanceSettings) isConfiguredHost(host string) bool {
+	for _, configuredHost := range settings.configuredHosts {
+		if hostsMatch(host, configuredHost) {
+			return true
+		}
+	}
+	return false
+}
+
+func (settings *instanceSettings) isHostInCluster(host string) (bool, error) {
+	targetHost := normalizeHostAddress(host)
+	if targetHost == "" {
+		return false, nil
+	}
+
+	clusterSession, err := settings.getSession()
+	if err != nil {
+		return false, err
+	}
+
+	targetIPSet := resolveHostSet(targetHost)
+
+	matchHost := func(candidateHost string) bool {
+		normalized := normalizeHostAddress(candidateHost)
+		if normalized == "" {
+			return false
+		}
+		if len(targetIPSet) > 0 {
+			candidateIPSet := resolveHostSet(normalized)
+			for candidateIP := range candidateIPSet {
+				if _, ok := targetIPSet[candidateIP]; ok {
+					return true
+				}
+			}
+			return false
+		}
+		return normalized == targetHost
+	}
+
+	checkIter := func(iter *gocql.Iter) (bool, error) {
+		row := make(map[string]interface{})
+		for iter.MapScan(row) {
+			for _, raw := range row {
+				if raw == nil {
+					continue
+				}
+				if matchHost(fmt.Sprintf("%v", raw)) {
+					if err := iter.Close(); err != nil {
+						return false, err
+					}
+					return true, nil
+				}
+			}
+			row = make(map[string]interface{})
+		}
+		if err := iter.Close(); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+
+	localMatch, err := checkIter(clusterSession.Query("SELECT rpc_address, broadcast_address, listen_address FROM system.local").Iter())
+	if err != nil {
+		return false, err
+	}
+	if localMatch {
+		return true, nil
+	}
+
+	peerMatch, err := checkIter(clusterSession.Query("SELECT peer, rpc_address FROM system.peers").Iter())
+	if err != nil {
+		return false, err
+	}
+	if peerMatch {
+		return true, nil
+	}
+
+	return false, nil
+}
+
+func (settings *instanceSettings) getHostIDByAddress(host string) (string, bool, error) {
+	if normalizeHostAddress(host) == "" {
+		return "", false, nil
+	}
+
+	session, err := settings.getSession()
+	if err != nil {
+		return "", false, err
+	}
+
+	for _, hostInfo := range session.GetHosts() {
+		if hostInfo == nil {
+			continue
+		}
+		if hostsMatch(hostInfoAddress(hostInfo), host) {
+			return hostInfo.HostID(), true, nil
+		}
+	}
+
+	return "", false, nil
+}
+
+func (settings *instanceSettings) getSession() (*gocql.Session, error) {
 	if r := recover(); r != nil {
 		log.DefaultLogger.Info("Recovered in getSession", "error", r)
 		var err error = nil
@@ -386,192 +644,36 @@ func (settings *instanceSettings) getSession(hostRef interface{}, specificHost b
 		}
 		return nil, err
 	}
-	var host string
-	var cluster *gocql.ClusterConfig
-	if hostRef != nil {
-		host = fmt.Sprintf("%v", hostRef)
+	settings.sessionMu.Lock()
+	defer settings.sessionMu.Unlock()
+	if settings.disposed {
+		return nil, errors.New("datasource instance has been disposed")
 	}
-	if val, ok := settings.sessions[host]; ok {
-		return val, nil
+	if settings.session != nil && !settings.session.Closed() {
+		return settings.session, nil
 	}
-	if host == "" {
-		if settings.cluster == nil {
-			return nil, errors.New("no host supplied for connection")
-		}
-		cluster = settings.cluster
-	} else if settings.clusters[host] == nil {
-		settings.clusters[host] = gocql.NewCluster(host)
-		// Custom host filter that handles both public and private IPs
-		targetIP := host
-		// Remove port if present (host might be "ip:port" or "[ipv6]:port")
-		if h, _, err := net.SplitHostPort(host); err == nil {
-			targetIP = h
-		}
-		log.DefaultLogger.Debug("Setting up host filter", "targetIP", targetIP, "originalHost", host)
-
-		// Pre-resolve target host to one or more IPs for robust matching.
-		targetIPs := make([]net.IP, 0, 2)
-		if parsed := net.ParseIP(targetIP); parsed != nil {
-			targetIPs = append(targetIPs, parsed)
-		} else if addrs, err := net.LookupIP(targetIP); err == nil {
-			targetIPs = append(targetIPs, addrs...)
-		}
-		targetIPSet := make(map[string]struct{}, len(targetIPs))
-		for _, resolvedIP := range targetIPs {
-			if resolvedIP != nil {
-				targetIPSet[resolvedIP.String()] = struct{}{}
-			}
-		}
-
-		// Configure cluster to handle private/public IP scenarios
-		// IgnorePeerAddr = true prevents the driver from connecting to addresses discovered via gossip
-		// and forces it to only use the addresses we explicitly provided
-		settings.clusters[host].IgnorePeerAddr = true
-		settings.clusters[host].Consistency = gocql.LocalOne
-		// DisableInitialHostLookup = true to use the exact host we specified
-		settings.clusters[host].DisableInitialHostLookup = true
-
-		// Add connection timeout to avoid hanging indefinitely
-		settings.clusters[host].ConnectTimeout = 5 * time.Second
-		settings.clusters[host].Timeout = 10 * time.Second
-
-		// Extract port from host if present
-		port := 9042
-		if _, portStr, err := net.SplitHostPort(host); err == nil {
-			if p, err := strconv.Atoi(portStr); err == nil {
-				port = p
-			}
-		}
-
-		// Set up custom address translator to force connections to use the target IP
-		settings.clusters[host].AddressTranslator = &customAddressTranslator{
-			targetIP: targetIP,
-			port:     port,
-		}
-
-		// Custom host filter to force using the target IP
-		// This ensures we connect to the private IP even if the driver discovers public IPs
-		settings.clusters[host].HostFilter = gocql.HostFilterFunc(func(hostInfo *gocql.HostInfo) bool {
-			if hostInfo == nil {
-				log.DefaultLogger.Debug("Host info is nil - connection allowed", "targetIP", targetIP)
-				return true
-			}
-
-			preferredIP := hostInfo.PreferredIP().String()
-			rpcAddr := hostInfo.RPCAddress().String()
-			broadcastAddr := hostInfo.BroadcastAddress().String()
-			listenAddr := hostInfo.ListenAddress().String()
-
-			// Log all available hosts for debugging
-			log.DefaultLogger.Debug("Available host detected",
-				"preferredIP", preferredIP,
-				"rpcAddress", rpcAddr,
-				"broadcastAddress", broadcastAddr,
-				"listenAddress", listenAddr,
-				"targetIP", targetIP,
-				"hostID", hostInfo.HostID())
-
-			normalizeAddr := func(addr string) string {
-				if addr == "" || addr == "<nil>" {
-					return ""
-				}
-				if h, _, err := net.SplitHostPort(addr); err == nil {
-					return h
-				}
-				return addr
-			}
-
-			preferredIPNorm := normalizeAddr(preferredIP)
-			rpcIP := normalizeAddr(rpcAddr)
-			broadcastIP := normalizeAddr(broadcastAddr)
-			listenIP := normalizeAddr(listenAddr)
-
-			candidateAddrs := []string{preferredIPNorm, rpcIP, broadcastIP, listenIP}
-			candidateIPs := make([]net.IP, 0, len(candidateAddrs))
-			for _, candidate := range candidateAddrs {
-				if candidate == "" {
-					continue
-				}
-				if parsed := net.ParseIP(candidate); parsed != nil {
-					candidateIPs = append(candidateIPs, parsed)
-				}
-			}
-
-			// Some driver states expose host entries with incomplete metadata.
-			// In that case, don't block session creation.
-			if len(candidateIPs) == 0 {
-				log.DefaultLogger.Debug("Host metadata incomplete - connection allowed",
-					"targetIP", targetIP,
-					"preferredIP", preferredIPNorm,
-					"rpcIP", rpcIP,
-					"broadcastIP", broadcastIP,
-					"listenIP", listenIP)
-				return true
-			}
-
-			for _, candidateIP := range candidateIPs {
-				if _, ok := targetIPSet[candidateIP.String()]; ok {
-					log.DefaultLogger.Debug("Host matched - connection allowed",
-						"targetIP", targetIP,
-						"preferredIP", preferredIPNorm,
-						"rpcIP", rpcIP,
-						"broadcastIP", broadcastIP,
-						"listenIP", listenIP)
-					return true
-				}
-			}
-
-			// Fallback for unresolved target hostnames.
-			if len(targetIPs) == 0 {
-				for _, candidate := range candidateAddrs {
-					if candidate == targetIP {
-						log.DefaultLogger.Debug("Host matched by hostname - connection allowed",
-							"targetIP", targetIP,
-							"preferredIP", preferredIPNorm,
-							"rpcIP", rpcIP,
-							"broadcastIP", broadcastIP,
-							"listenIP", listenIP)
-						return true
-					}
-				}
-			}
-
-			log.DefaultLogger.Debug("Host filtered out",
-				"targetIP", targetIP,
-				"preferredIP", preferredIPNorm,
-				"rpcIP", rpcIP,
-				"broadcastIP", broadcastIP,
-				"listenIP", listenIP)
-			return false
-		})
-
-		log.DefaultLogger.Debug("getSession creating cluster from host", "host", host)
-		if settings.authenticator != nil {
-			settings.clusters[host].Authenticator = *settings.authenticator
-		}
-		settings.clusters[host].SslOpts = settings.sslOpts
-		if settings.cluster == nil {
-			// good opportunity to create a default cluster
-			settings.cluster = gocql.NewCluster(host)
-			if settings.authenticator != nil {
-				settings.cluster.Authenticator = *settings.authenticator
-			}
-			settings.cluster.SslOpts = settings.sslOpts
-			settings.cluster.Consistency = gocql.LocalOne
-		}
-
+	if settings.cluster == nil {
+		return nil, errors.New("no host supplied for connection")
 	}
-	if host == "" {
-		cluster = settings.cluster
-	} else {
-		cluster = settings.clusters[host]
-	}
-	session, err := gocql.NewSession(*cluster)
+	session, err := gocql.NewSession(*settings.cluster)
 	if err != nil {
-		log.DefaultLogger.Info("unable to connect to scylla", "err", err, "host", host, "clusterHosts", cluster.Hosts)
+		log.DefaultLogger.Info("unable to connect to scylla", "err", err, "clusterHosts", settings.cluster.Hosts)
 		return nil, err
 	}
-	log.DefaultLogger.Debug("Session created successfully", "host", host)
-	settings.sessions[host] = session
+	log.DefaultLogger.Debug("Session created successfully")
+	settings.session = session
 	return session, nil
+}
+
+// close releases the session and marks the instance unusable, so a request that
+// is still in flight during Dispose cannot resurrect a session that nothing
+// would ever close.
+func (settings *instanceSettings) close() {
+	settings.sessionMu.Lock()
+	defer settings.sessionMu.Unlock()
+	settings.disposed = true
+	if settings.session != nil {
+		settings.session.Close()
+		settings.session = nil
+	}
 }
