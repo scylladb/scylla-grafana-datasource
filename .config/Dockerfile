@@ -5,7 +5,7 @@ FROM grafana/${grafana_image}:${grafana_version}
 
 ARG development=true
 
-ARG GO_VERSION=1.21.6
+ARG GO_VERSION=1.25.7
 ARG GO_ARCH=amd64
 
 ENV DEV "${development}"
