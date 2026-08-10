@@ -1,5 +1,9 @@
 import { DataQuery, DataSourceJsonData } from '@grafana/data';
 
+export type ConnectionScope = 'cluster_only' | 'specified_list' | 'any';
+
+export const DEFAULT_CONNECTION_SCOPE: ConnectionScope = 'cluster_only';
+
 export interface MyQuery extends DataQuery {
   queryText?: string;
   queryHost?: string;
@@ -17,6 +21,7 @@ export const DEFAULT_QUERY: Partial<MyQuery> = {
  */
 export interface MyDataSourceOptions extends DataSourceJsonData {
   host?: string;
+  connectionScope?: ConnectionScope;
   enableTls?: boolean;
   tlsCaCertPath?: string;
   tlsClientCertPath?: string;

@@ -59,9 +59,25 @@ func buildSslOpts(enableTls bool, caCertPath, clientCertPath, clientKeyPath stri
 	}, nil
 }
 
+const (
+	connectionScopeClusterOnly = "cluster_only"
+	connectionScopeSpecified   = "specified_list"
+	connectionScopeAny         = "any"
+)
+
+func normalizeConnectionScope(scope string) string {
+	switch scope {
+	case connectionScopeSpecified, connectionScopeAny:
+		return scope
+	default:
+		return connectionScopeClusterOnly
+	}
+}
+
 func getDatasourceSettings(setting backend.DataSourceInstanceSettings) (*instanceSettings, error) {
 	type editModel struct {
 		Host              string `json:"host"`
+		ConnectionScope   string `json:"connectionScope"`
 		EnableTls         bool   `json:"enableTls"`
 		TlsCaCertPath     string `json:"tlsCaCertPath"`
 		TlsClientCertPath string `json:"tlsClientCertPath"`
@@ -77,6 +93,10 @@ func getDatasourceSettings(setting backend.DataSourceInstanceSettings) (*instanc
 		return nil, err
 	}
 	log.DefaultLogger.Info("looking for host", "host", hosts.Host)
+	connectionScope := normalizeConnectionScope(hosts.ConnectionScope)
+	if connectionScope != connectionScopeAny && strings.TrimSpace(hosts.Host) == "" {
+		return nil, errors.New("host list cannot be empty when connection scope is not any")
+	}
 	var newCluster *gocql.ClusterConfig = nil
 	var authenticator *gocql.PasswordAuthenticator = nil
 	password, hasPassword := secureData["password"]
@@ -101,11 +121,13 @@ func getDatasourceSettings(setting backend.DataSourceInstanceSettings) (*instanc
 		newCluster.Consistency = gocql.LocalOne
 	}
 	return &instanceSettings{
-		cluster:       newCluster,
-		authenticator: authenticator,
-		sslOpts:       sslOpts,
-		sessions:      make(map[string]*gocql.Session),
-		clusters:      make(map[string]*gocql.ClusterConfig),
+		cluster:         newCluster,
+		authenticator:   authenticator,
+		sslOpts:         sslOpts,
+		sessions:        make(map[string]*gocql.Session),
+		clusters:        make(map[string]*gocql.ClusterConfig),
+		host:            hosts.Host,
+		connectionScope: connectionScope,
 	}, nil
 }
 
@@ -341,11 +363,13 @@ func (t *customAddressTranslator) Translate(ip net.IP, port int) (net.IP, int) {
 }
 
 type instanceSettings struct {
-	cluster       *gocql.ClusterConfig
-	authenticator *gocql.PasswordAuthenticator
-	sslOpts       *gocql.SslOptions
-	sessions      map[string]*gocql.Session
-	clusters      map[string]*gocql.ClusterConfig
+	cluster         *gocql.ClusterConfig
+	authenticator   *gocql.PasswordAuthenticator
+	sslOpts         *gocql.SslOptions
+	sessions        map[string]*gocql.Session
+	clusters        map[string]*gocql.ClusterConfig
+	host            string
+	connectionScope string
 }
 
 func (settings *instanceSettings) getSession(hostRef interface{}, specificHost bool) (*gocql.Session, error) {

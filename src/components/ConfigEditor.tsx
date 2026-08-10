@@ -1,16 +1,36 @@
-import React, { ChangeEvent } from 'react';
-import { InlineField, InlineSwitch, Input, SecretInput } from '@grafana/ui';
-import { DataSourcePluginOptionsEditorProps } from '@grafana/data';
-import { MyDataSourceOptions, MySecureJsonData } from '../types';
+import React, { ChangeEvent, useEffect } from 'react';
+import { InlineField, InlineSwitch, Input, SecretInput, Select } from '@grafana/ui';
+import { DataSourcePluginOptionsEditorProps, SelectableValue } from '@grafana/data';
+import { ConnectionScope, DEFAULT_CONNECTION_SCOPE, MyDataSourceOptions, MySecureJsonData } from '../types';
 
 interface Props extends DataSourcePluginOptionsEditorProps<MyDataSourceOptions> {}
 
 export function ConfigEditor(props: Props) {
   const { onOptionsChange, options } = props;
+  useEffect(() => {
+    if (!options.jsonData.connectionScope) {
+      onOptionsChange({
+        ...options,
+        jsonData: {
+          ...options.jsonData,
+          connectionScope: DEFAULT_CONNECTION_SCOPE,
+        },
+      });
+    }
+  }, [onOptionsChange, options]);
+
   const onHostChange = (event: ChangeEvent<HTMLInputElement>) => {
     const jsonData = {
       ...options.jsonData,
       host: event.target.value,
+    };
+    onOptionsChange({ ...options, jsonData });
+  };
+
+  const onConnectionScopeChange = (value: SelectableValue<ConnectionScope>) => {
+    const jsonData = {
+      ...options.jsonData,
+      connectionScope: value.value || DEFAULT_CONNECTION_SCOPE,
     };
     onOptionsChange({ ...options, jsonData });
   };
@@ -103,9 +123,22 @@ export function ConfigEditor(props: Props) {
 
   const { jsonData, secureJsonFields } = options;
   const secureJsonData = (options.secureJsonData || {}) as MySecureJsonData;
+  const connectionScopeOptions: Array<SelectableValue<ConnectionScope>> = [
+    { label: 'Cluster only (default)', value: 'cluster_only' },
+    { label: 'Specified list', value: 'specified_list' },
+    { label: 'Any (Unsafe)', value: 'any' },
+  ];
 
   return (
     <div className="gf-form-group">
+      <InlineField label="Connection scope" labelWidth={12}>
+        <Select
+          width={40}
+          value={jsonData.connectionScope || DEFAULT_CONNECTION_SCOPE}
+          options={connectionScopeOptions}
+          onChange={onConnectionScopeChange}
+        />
+      </InlineField>
       <InlineField
       label="Host"
       labelWidth={12}
@@ -113,7 +146,7 @@ export function ConfigEditor(props: Props) {
         <Input
           onChange={onHostChange}
           value={jsonData.host || ''}
-          placeholder="A host IP address"
+          placeholder="Host or comma-separated host list"
           width={40}
         />
       </InlineField>
