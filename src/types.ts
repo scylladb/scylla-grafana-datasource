@@ -17,6 +17,11 @@ export const DEFAULT_QUERY: Partial<MyQuery> = {
  */
 export interface MyDataSourceOptions extends DataSourceJsonData {
   host?: string;
+  enableTls?: boolean;
+  tlsCaCertPath?: string;
+  tlsClientCertPath?: string;
+  tlsClientKeyPath?: string;
+  tlsSkipVerify?: boolean;
 }
 
 /**

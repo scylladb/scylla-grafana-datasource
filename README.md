@@ -23,7 +23,10 @@ for example, if you are using Grafana with containers, add:
 -e "GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=scylladb-scylla-datasource"
 ```
 
-You can now add the scylla data source, the only current configuration is a host in the cluster.
+You can now add the scylla data source. You may configure a host in the cluster to
+connect to by default; alternatively the host can be supplied per query and the cluster
+connection is created on demand. Optional configuration includes username/password
+authentication and TLS/mTLS (see below).
 
 When adding a panel use CQL to get the data.
 you can only do select statements, but any valid select would work.
@@ -62,6 +65,39 @@ To support user and password add `secureJsonData` to `grafana/datasource.yml`
     password: 'cassandra'
 ```
 
+### TLS / mTLS
+
+To connect to a cluster that requires encryption in transit, or mutual TLS
+client-certificate authentication, set `enableTls` in `jsonData` along with
+the paths (on the Grafana server's filesystem, not the browser) to the
+relevant PEM files:
+
+Note: the default installation runs Grafana in a Docker container, so the
+certificate files must be mounted into the container, e.g.
+`-v /path/to/certs:/etc/grafana/certs`.
+
+```
+- name: scylla-datasource
+  type: scylladb-scylla-datasource
+  orgId: 1
+  isDefault:
+  jsonData:
+    host: 'node-ip'
+    enableTls: true
+    tlsCaCertPath: '/etc/grafana/certs/ca.pem'
+    tlsClientCertPath: '/etc/grafana/certs/client-cert.pem'
+    tlsClientKeyPath: '/etc/grafana/certs/client-key.pem'
+    tlsSkipVerify: false
+```
+
+* `enableTls` - enables TLS for the connection; required for any of the other TLS fields to take effect.
+* `tlsCaCertPath` - path to a CA certificate used to verify the server's certificate. Optional; omit to use the system trust store.
+* `tlsClientCertPath` / `tlsClientKeyPath` - paths to a client certificate/key pair, required together for mutual TLS (mTLS). Leave both empty for plain TLS without client authentication.
+* `tlsSkipVerify` - when `true`, disables server certificate/hostname verification. Not recommended outside of testing.
+
+TLS/mTLS can be combined with `user`/`password` authentication from
+`secureJsonData` above; the two are independent settings.
+
 ### Configure the Datasource using Grafana API:
 Grafana API allows adding datasource.
 The following will add a data source without a username and password, replace the `ADMIN_PASSWORD`
@@ -80,6 +116,17 @@ curl -XPOST -i http://admin:$ADMIN_PASSWORD@localhost:3000/api/datasources \
      "jsonData":{"host": ""}, "secureJsonData":{"user": "scylla", "password": "scylla"}}' \
       -H "Content-Type: application/json"
 ```
+
+The following example shows how to configure the plugin with TLS/mTLS, using
+paths to PEM files on the Grafana server:
+```
+curl -XPOST -i http://admin:$ADMIN_PASSWORD@localhost:3000/api/datasources \
+     --data-binary '{"name": "scylla-datasource","type": "scylladb-scylla-datasource", "orgId": 1,"access":"proxy", \
+     "jsonData":{"host": "", "enableTls": true, "tlsCaCertPath": "/etc/grafana/certs/ca.pem", \
+     "tlsClientCertPath": "/etc/grafana/certs/client-cert.pem", "tlsClientKeyPath": "/etc/grafana/certs/client-key.pem"}}' \
+      -H "Content-Type: application/json"
+```
+
 
 ## Compiling the data source by yourself
 A data source backend plugin consists of both frontend and backend components.
