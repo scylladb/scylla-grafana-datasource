@@ -39,9 +39,34 @@ var (
 	_ instancemgmt.InstanceDisposer = (*Datasource)(nil)
 )
 
+// buildSslOpts constructs gocql.SslOptions from the configured paths, validating
+// that the client cert and key are provided as a pair. gocql calls
+// tls.LoadX509KeyPair when either path is set, so a partial mTLS configuration
+// would otherwise fail later, deep inside session creation, with a confusing
+// low-level file error.
+func buildSslOpts(enableTls bool, caCertPath, clientCertPath, clientKeyPath string, skipVerify bool) (*gocql.SslOptions, error) {
+	if !enableTls {
+		return nil, nil
+	}
+	if (clientCertPath == "") != (clientKeyPath == "") {
+		return nil, errors.New("TLS client cert path and client key path must both be set for mTLS, or both left empty")
+	}
+	return &gocql.SslOptions{
+		CertPath:               clientCertPath,
+		KeyPath:                clientKeyPath,
+		CaPath:                 caCertPath,
+		EnableHostVerification: !skipVerify,
+	}, nil
+}
+
 func getDatasourceSettings(setting backend.DataSourceInstanceSettings) (*instanceSettings, error) {
 	type editModel struct {
-		Host string `json:"host"`
+		Host              string `json:"host"`
+		EnableTls         bool   `json:"enableTls"`
+		TlsCaCertPath     string `json:"tlsCaCertPath"`
+		TlsClientCertPath string `json:"tlsClientCertPath"`
+		TlsClientKeyPath  string `json:"tlsClientKeyPath"`
+		TlsSkipVerify     bool   `json:"tlsSkipVerify"`
 	}
 	var hosts editModel
 	log.DefaultLogger.Debug("newDataSourceInstance", "data", setting.JSONData)
@@ -63,16 +88,22 @@ func getDatasourceSettings(setting backend.DataSourceInstanceSettings) (*instanc
 			Password: password,
 		}
 	}
+	sslOpts, err := buildSslOpts(hosts.EnableTls, hosts.TlsCaCertPath, hosts.TlsClientCertPath, hosts.TlsClientKeyPath, hosts.TlsSkipVerify)
+	if err != nil {
+		return nil, err
+	}
 	if hosts.Host != "" {
 		newCluster = gocql.NewCluster(hosts.Host)
 		if authenticator != nil {
 			newCluster.Authenticator = *authenticator
 		}
+		newCluster.SslOpts = sslOpts
 		newCluster.Consistency = gocql.LocalOne
 	}
 	return &instanceSettings{
 		cluster:       newCluster,
 		authenticator: authenticator,
+		sslOpts:       sslOpts,
 		sessions:      make(map[string]*gocql.Session),
 		clusters:      make(map[string]*gocql.ClusterConfig),
 	}, nil
@@ -312,6 +343,7 @@ func (t *customAddressTranslator) Translate(ip net.IP, port int) (net.IP, int) {
 type instanceSettings struct {
 	cluster       *gocql.ClusterConfig
 	authenticator *gocql.PasswordAuthenticator
+	sslOpts       *gocql.SslOptions
 	sessions      map[string]*gocql.Session
 	clusters      map[string]*gocql.ClusterConfig
 }
@@ -493,12 +525,14 @@ func (settings *instanceSettings) getSession(hostRef interface{}, specificHost b
 		if settings.authenticator != nil {
 			settings.clusters[host].Authenticator = *settings.authenticator
 		}
+		settings.clusters[host].SslOpts = settings.sslOpts
 		if settings.cluster == nil {
 			// good opportunity to create a default cluster
 			settings.cluster = gocql.NewCluster(host)
 			if settings.authenticator != nil {
 				settings.cluster.Authenticator = *settings.authenticator
 			}
+			settings.cluster.SslOpts = settings.sslOpts
 			settings.cluster.Consistency = gocql.LocalOne
 		}
 
