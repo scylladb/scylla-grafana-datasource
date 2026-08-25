@@ -667,10 +667,13 @@ func (settings *instanceSettings) getSession() (*gocql.Session, error) {
 	return settings.getSessionWithHosts(nil)
 }
 
-// getSessionWithHosts returns the shared session, creating it on first use. queryHosts are
-// only consulted when the datasource has no configured hosts and connection scope is "any";
-// the lazily built cluster is deliberately not stored, so a later reconnect uses the hosts of
-// the query that triggers it rather than whichever query happened to come first.
+// getSessionWithHosts returns the shared session, creating it on first use. A datasource
+// instance holds a single session and therefore serves a single cluster in every connection
+// scope. queryHosts are only consulted when the datasource has no configured hosts and the
+// connection scope is "any": the first query's hosts pick the cluster, and as long as that
+// session is live all later queries reuse it regardless of the hosts they name, so hosts from
+// a different cluster fail to resolve against its metadata. Only once the session is closed
+// is the cluster rebuilt, from the hosts of the query that triggers the reconnect.
 func (settings *instanceSettings) getSessionWithHosts(queryHosts []string) (*gocql.Session, error) {
 	if r := recover(); r != nil {
 		log.DefaultLogger.Info("Recovered in getSession", "error", r)

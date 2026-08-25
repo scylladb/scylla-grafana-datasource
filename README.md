@@ -65,6 +65,34 @@ To support user and password add `secureJsonData` to `grafana/datasource.yml`
     password: 'cassandra'
 ```
 
+### Connection scope and query hosts
+
+`connectionScope` in `jsonData` controls which hosts a query may be routed to:
+
+* `cluster_only` (default) - queries may target any node of the cluster reached through `host`. A query host that is not part of that cluster is rejected.
+* `specified_list` - queries may only target nodes listed in `host`. A query host is required.
+* `any` - no restriction on the query host. This is the only scope that allows `host` to be left empty:
+
+```
+- name: scylla-datasource
+  type: scylladb-scylla-datasource
+  orgId: 1
+  isDefault:
+  jsonData:
+    host: ''
+    connectionScope: 'any'
+```
+
+With this configuration the connection is created on demand from the hosts supplied by the
+first query (for example a `queryHost` bound to a dashboard variable), which is how
+Scylla-Monitoring uses the plugin.
+
+A datasource instance holds a single connection and therefore serves a **single cluster** in
+every connection scope. With `any` and an empty `host`, the first query's hosts decide which
+cluster that is; hosts from another cluster in later queries fail to resolve until the
+connection is re-established (a datasource settings change or a Grafana restart). To query
+several clusters, configure one datasource per cluster.
+
 ### TLS / mTLS
 
 To connect to a cluster that requires encryption in transit, or mutual TLS
