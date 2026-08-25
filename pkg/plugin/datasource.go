@@ -99,7 +99,6 @@ func getDatasourceSettings(setting backend.DataSourceInstanceSettings) (*instanc
 	if connectionScope != connectionScopeAny && len(configuredHosts) == 0 {
 		return nil, errors.New("host list cannot be empty when connection scope is not any")
 	}
-	var newCluster *gocql.ClusterConfig = nil
 	var authenticator *gocql.PasswordAuthenticator = nil
 	password, hasPassword := secureData["password"]
 	user, hasUser := secureData["user"]
@@ -114,27 +113,19 @@ func getDatasourceSettings(setting backend.DataSourceInstanceSettings) (*instanc
 	if err != nil {
 		return nil, err
 	}
-	if len(configuredHosts) > 0 {
-		newCluster = gocql.NewCluster(configuredHosts...)
-		if authenticator != nil {
-			newCluster.Authenticator = *authenticator
-		}
-		newCluster.SslOpts = sslOpts
-		newCluster.Consistency = gocql.LocalOne
-		switch connectionScope {
-		case connectionScopeSpecified:
-			newCluster.HostFilter = gocql.WhiteListHostFilter(configuredHosts...)
-		default:
-			newCluster.HostFilter = gocql.AcceptAllFilter()
-		}
-	}
-	return &instanceSettings{
-		cluster:         newCluster,
+	settings := &instanceSettings{
 		authenticator:   authenticator,
+		sslOpts:         sslOpts,
 		host:            hosts.Host,
 		connectionScope: connectionScope,
 		configuredHosts: configuredHosts,
-	}, nil
+	}
+	// With connection scope "any" the host list may be left empty, in which case the
+	// cluster is built lazily from the hosts each query supplies (see clusterForSession).
+	if len(configuredHosts) > 0 {
+		settings.cluster = settings.newClusterConfig(configuredHosts)
+	}
+	return settings, nil
 }
 
 // Datasource
@@ -276,7 +267,7 @@ func (td *Datasource) query(_ context.Context, pCtx backend.PluginContext, insta
 			hostRef string
 		}
 
-		session, err := instance.getSession()
+		session, err := instance.getSessionWithHosts(hostList)
 		if err != nil {
 			log.DefaultLogger.Warn("Failed getting session", "err", err)
 			response.Error = err
@@ -406,6 +397,13 @@ func (td *Datasource) query(_ context.Context, pCtx backend.PluginContext, insta
 func (d *Datasource) CheckHealth(_ context.Context, req *backend.CheckHealthRequest) (*backend.CheckHealthResult, error) {
 	var status = backend.HealthStatusOk
 	var message = "Data source is working"
+	// Nothing to connect to yet: with scope "any" the hosts arrive with each query.
+	if d.settings.cluster == nil && d.settings.connectionScope == connectionScopeAny {
+		return &backend.CheckHealthResult{
+			Status:  status,
+			Message: "No host configured; connections will use the hosts supplied by each query (connection scope: any)",
+		}, nil
+	}
 	_, err := d.settings.getSession()
 	if err != nil {
 		log.DefaultLogger.Warn("Failed getting session", "err", err)
@@ -434,9 +432,44 @@ type instanceSettings struct {
 	session         *gocql.Session
 	disposed        bool
 	authenticator   *gocql.PasswordAuthenticator
+	sslOpts         *gocql.SslOptions
 	host            string
 	connectionScope string
 	configuredHosts []string
+}
+
+// newClusterConfig builds the gocql cluster config for the given contact points, applying
+// the datasource's authentication, TLS and host filter settings. Both the configured host
+// list and the per-query host list go through here so the two paths cannot drift apart.
+func (settings *instanceSettings) newClusterConfig(hosts []string) *gocql.ClusterConfig {
+	cluster := gocql.NewCluster(hosts...)
+	if settings.authenticator != nil {
+		cluster.Authenticator = *settings.authenticator
+	}
+	cluster.SslOpts = settings.sslOpts
+	cluster.Consistency = gocql.LocalOne
+	switch settings.connectionScope {
+	case connectionScopeSpecified:
+		cluster.HostFilter = gocql.WhiteListHostFilter(hosts...)
+	default:
+		cluster.HostFilter = gocql.AcceptAllFilter()
+	}
+	return cluster
+}
+
+// clusterForSession decides which cluster config a new session should be built from.
+// A datasource with configured hosts always uses those. Without configured hosts, only
+// connection scope "any" may fall back to the hosts supplied by the query; the stricter
+// scopes are defined in terms of the configured list, so they have nothing to check
+// query hosts against and must fail instead.
+func (settings *instanceSettings) clusterForSession(queryHosts []string) (*gocql.ClusterConfig, error) {
+	if settings.cluster != nil {
+		return settings.cluster, nil
+	}
+	if settings.connectionScope == connectionScopeAny && len(queryHosts) > 0 {
+		return settings.newClusterConfig(queryHosts), nil
+	}
+	return nil, errors.New("no host supplied for connection: configure a host on the datasource, or use connection scope any and set a host on the query")
 }
 
 func parseHostList(hosts string) []string {
@@ -631,6 +664,17 @@ func (settings *instanceSettings) getHostIDByAddress(host string) (string, bool,
 }
 
 func (settings *instanceSettings) getSession() (*gocql.Session, error) {
+	return settings.getSessionWithHosts(nil)
+}
+
+// getSessionWithHosts returns the shared session, creating it on first use. A datasource
+// instance holds a single session and therefore serves a single cluster in every connection
+// scope. queryHosts are only consulted when the datasource has no configured hosts and the
+// connection scope is "any": the first query's hosts pick the cluster, and as long as that
+// session is live all later queries reuse it regardless of the hosts they name, so hosts from
+// a different cluster fail to resolve against its metadata. Only once the session is closed
+// is the cluster rebuilt, from the hosts of the query that triggers the reconnect.
+func (settings *instanceSettings) getSessionWithHosts(queryHosts []string) (*gocql.Session, error) {
 	if r := recover(); r != nil {
 		log.DefaultLogger.Info("Recovered in getSession", "error", r)
 		var err error = nil
@@ -652,12 +696,13 @@ func (settings *instanceSettings) getSession() (*gocql.Session, error) {
 	if settings.session != nil && !settings.session.Closed() {
 		return settings.session, nil
 	}
-	if settings.cluster == nil {
-		return nil, errors.New("no host supplied for connection")
-	}
-	session, err := gocql.NewSession(*settings.cluster)
+	cluster, err := settings.clusterForSession(queryHosts)
 	if err != nil {
-		log.DefaultLogger.Info("unable to connect to scylla", "err", err, "clusterHosts", settings.cluster.Hosts)
+		return nil, err
+	}
+	session, err := gocql.NewSession(*cluster)
+	if err != nil {
+		log.DefaultLogger.Info("unable to connect to scylla", "err", err, "clusterHosts", cluster.Hosts)
 		return nil, err
 	}
 	log.DefaultLogger.Debug("Session created successfully")
