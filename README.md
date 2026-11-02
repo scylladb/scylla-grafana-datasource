@@ -121,7 +121,8 @@ certificate files must be mounted into the container, e.g.
 * `enableTls` - enables TLS for the connection; required for any of the other TLS fields to take effect.
   With TLS enabled the plugin connects to port 9142 (Scylla's `native_transport_port_ssl`) unless the
   host gives an explicit port, e.g. `node-ip:9042` for a cluster that serves TLS on the regular CQL port.
-  An explicit port is used for every node in the cluster, not only the configured one.
+  An explicit port is used for every node in the cluster, not only the configured one, so all hosts
+  that give a port must give the same one.
 * `tlsCaCertPath` - path to a CA certificate used to verify the server's certificate. Optional; omit to use the system trust store.
 * `tlsClientCertPath` / `tlsClientKeyPath` - paths to a client certificate/key pair, required together for mutual TLS (mTLS). Leave both empty for plain TLS without client authentication.
 * `tlsSkipVerify` - when `true`, disables server certificate/hostname verification. Not recommended outside of testing.

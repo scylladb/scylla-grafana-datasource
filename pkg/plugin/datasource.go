@@ -123,7 +123,9 @@ func getDatasourceSettings(setting backend.DataSourceInstanceSettings) (*instanc
 	// With connection scope "any" the host list may be left empty, in which case the
 	// cluster is built lazily from the hosts each query supplies (see clusterForSession).
 	if len(configuredHosts) > 0 {
-		settings.cluster = settings.newClusterConfig(configuredHosts)
+		if settings.cluster, err = settings.newClusterConfig(configuredHosts); err != nil {
+			return nil, err
+		}
 	}
 	return settings, nil
 }
@@ -441,13 +443,17 @@ type instanceSettings struct {
 // newClusterConfig builds the gocql cluster config for the given contact points, applying
 // the datasource's authentication, TLS and host filter settings. Both the configured host
 // list and the per-query host list go through here so the two paths cannot drift apart.
-func (settings *instanceSettings) newClusterConfig(hosts []string) *gocql.ClusterConfig {
+func (settings *instanceSettings) newClusterConfig(hosts []string) (*gocql.ClusterConfig, error) {
+	port, err := clusterPort(hosts, settings.sslOpts != nil)
+	if err != nil {
+		return nil, err
+	}
 	cluster := gocql.NewCluster(hosts...)
 	if settings.authenticator != nil {
 		cluster.Authenticator = *settings.authenticator
 	}
 	cluster.SslOpts = settings.sslOpts
-	cluster.Port = clusterPort(hosts, settings.sslOpts != nil)
+	cluster.Port = port
 	cluster.Consistency = gocql.LocalOne
 	switch settings.connectionScope {
 	case connectionScopeSpecified:
@@ -455,7 +461,7 @@ func (settings *instanceSettings) newClusterConfig(hosts []string) *gocql.Cluste
 	default:
 		cluster.HostFilter = gocql.AcceptAllFilter()
 	}
-	return cluster
+	return cluster, nil
 }
 
 // clusterPort picks the CQL port for the cluster. gocql only honors a port written in a
@@ -464,18 +470,31 @@ func (settings *instanceSettings) newClusterConfig(hosts []string) *gocql.Cluste
 // in the host list must become cluster.Port, or a TLS-only port such as 9142 would work for
 // the first node and fail for the rest. Without an explicit port, TLS defaults to Scylla's
 // native_transport_port_ssl (9142), since 9042 stays plaintext when that port is enabled.
-func clusterPort(hosts []string, tls bool) int {
+// A datasource targets a single cluster, so explicit ports that disagree are rejected:
+// one cluster-wide port could not reach the peers of both.
+func clusterPort(hosts []string, tls bool) (int, error) {
+	port := 0
 	for _, h := range hosts {
-		if _, p, err := net.SplitHostPort(h); err == nil {
-			if port, err := strconv.Atoi(p); err == nil {
-				return port
-			}
+		_, p, err := net.SplitHostPort(h)
+		if err != nil {
+			continue // no port in this host
 		}
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 1 || n > 65535 {
+			return 0, fmt.Errorf("invalid port in host %q", h)
+		}
+		if port != 0 && n != port {
+			return 0, fmt.Errorf("hosts specify different ports (%d and %d); all hosts of a cluster must use the same port", port, n)
+		}
+		port = n
+	}
+	if port != 0 {
+		return port, nil
 	}
 	if tls {
-		return 9142
+		return 9142, nil
 	}
-	return 9042
+	return 9042, nil
 }
 
 // clusterForSession decides which cluster config a new session should be built from.
@@ -488,7 +507,7 @@ func (settings *instanceSettings) clusterForSession(queryHosts []string) (*gocql
 		return settings.cluster, nil
 	}
 	if settings.connectionScope == connectionScopeAny && len(queryHosts) > 0 {
-		return settings.newClusterConfig(queryHosts), nil
+		return settings.newClusterConfig(queryHosts)
 	}
 	return nil, errors.New("no host supplied for connection: configure a host on the datasource, or use connection scope any and set a host on the query")
 }
