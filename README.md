@@ -13,7 +13,7 @@ That means that that from IP connectivity, your Database (Scylla or Appache Cass
 
 
 ## Getting started
-Use Grafana 7.0 or higher
+Use Grafana 13.2 or higher
 * Download and place the datasouce in grafana/plugins directory.
 
 This plugin is not signed yet, Granfa will not allow loading it by default. you should enable it by adding:
@@ -33,7 +33,7 @@ you can only do select statements, but any valid select would work.
 
 
 ## For Scylla-Monitoring Users
-* Take the master branch that would run Grafana 7
+* Use a Scylla-Monitoring version that runs Grafana 13.2 or higher
 * Either edit and add the the `ALLOW_PLUGINS` to `start-grafana.sh` or use the command line flag to `start-all.sh`
 ```
 ./start-all.sh -s scylla_servers.yml -c "GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=scylladb-scylla-datasource"
