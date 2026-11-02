@@ -98,7 +98,7 @@ func TestClusterForSession(t *testing.T) {
 
 	t.Run("configured cluster wins regardless of query hosts", func(t *testing.T) {
 		s := &instanceSettings{connectionScope: connectionScopeAny, configuredHosts: []string{"10.0.0.1"}}
-		s.cluster = s.newClusterConfig(s.configuredHosts)
+		s.cluster, _ = s.newClusterConfig(s.configuredHosts)
 
 		got, err := s.clusterForSession(queryHosts)
 		if err != nil {
@@ -147,7 +147,7 @@ func TestNewClusterConfigAppliesSettings(t *testing.T) {
 
 	t.Run("auth, tls and consistency are applied", func(t *testing.T) {
 		s := &instanceSettings{connectionScope: connectionScopeAny, authenticator: auth, sslOpts: ssl}
-		c := s.newClusterConfig([]string{"10.0.0.1"})
+		c, _ := s.newClusterConfig([]string{"10.0.0.1"})
 
 		if got, ok := c.Authenticator.(gocql.PasswordAuthenticator); !ok || got.Username != "u" {
 			t.Fatalf("authenticator not applied: %#v", c.Authenticator)
@@ -164,11 +164,42 @@ func TestNewClusterConfigAppliesSettings(t *testing.T) {
 		whitelisted := &instanceSettings{connectionScope: connectionScopeSpecified}
 		open := &instanceSettings{connectionScope: connectionScopeAny}
 
-		if whitelisted.newClusterConfig([]string{"10.0.0.1"}).HostFilter == nil {
+		if c, _ := whitelisted.newClusterConfig([]string{"10.0.0.1"}); c.HostFilter == nil {
 			t.Fatal("expected a host filter for specified_list")
 		}
-		if open.newClusterConfig([]string{"10.0.0.1"}).HostFilter == nil {
+		if c, _ := open.newClusterConfig([]string{"10.0.0.1"}); c.HostFilter == nil {
 			t.Fatal("expected an accept-all host filter for any")
 		}
 	})
+}
+
+func TestClusterPort(t *testing.T) {
+	cases := []struct {
+		hosts []string
+		tls   bool
+		want  int
+	}{
+		{[]string{"10.0.0.1"}, false, 9042},
+		{[]string{"10.0.0.1"}, true, 9142},
+		{[]string{"10.0.0.1:9042"}, true, 9042},
+		{[]string{"10.0.0.1", "10.0.0.2:19142"}, false, 19142},
+		{[]string{"[::1]:9142"}, false, 9142},
+		{[]string{"::1"}, true, 9142},
+		{[]string{"10.0.0.1:9142", "10.0.0.2:9142"}, false, 9142},
+	}
+	for _, c := range cases {
+		if got, err := clusterPort(c.hosts, c.tls); err != nil || got != c.want {
+			t.Errorf("clusterPort(%v, %v) = %d, %v, want %d", c.hosts, c.tls, got, err, c.want)
+		}
+	}
+	for _, hosts := range [][]string{
+		{"10.0.0.1:0"},
+		{"10.0.0.1:70000"},
+		{"10.0.0.1:abc"},
+		{"10.0.0.1:9042", "10.0.0.2:9142"},
+	} {
+		if _, err := clusterPort(hosts, true); err == nil {
+			t.Errorf("clusterPort(%v) succeeded, want error", hosts)
+		}
+	}
 }
