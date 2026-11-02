@@ -447,6 +447,7 @@ func (settings *instanceSettings) newClusterConfig(hosts []string) *gocql.Cluste
 		cluster.Authenticator = *settings.authenticator
 	}
 	cluster.SslOpts = settings.sslOpts
+	cluster.Port = clusterPort(hosts, settings.sslOpts != nil)
 	cluster.Consistency = gocql.LocalOne
 	switch settings.connectionScope {
 	case connectionScopeSpecified:
@@ -455,6 +456,26 @@ func (settings *instanceSettings) newClusterConfig(hosts []string) *gocql.Cluste
 		cluster.HostFilter = gocql.AcceptAllFilter()
 	}
 	return cluster
+}
+
+// clusterPort picks the CQL port for the cluster. gocql only honors a port written in a
+// contact point for that contact point; every peer it discovers afterwards is dialed on
+// cluster.Port, because Scylla's system.peers carries no native port. So an explicit port
+// in the host list must become cluster.Port, or a TLS-only port such as 9142 would work for
+// the first node and fail for the rest. Without an explicit port, TLS defaults to Scylla's
+// native_transport_port_ssl (9142), since 9042 stays plaintext when that port is enabled.
+func clusterPort(hosts []string, tls bool) int {
+	for _, h := range hosts {
+		if _, p, err := net.SplitHostPort(h); err == nil {
+			if port, err := strconv.Atoi(p); err == nil {
+				return port
+			}
+		}
+	}
+	if tls {
+		return 9142
+	}
+	return 9042
 }
 
 // clusterForSession decides which cluster config a new session should be built from.

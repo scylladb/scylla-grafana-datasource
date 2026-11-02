@@ -172,3 +172,23 @@ func TestNewClusterConfigAppliesSettings(t *testing.T) {
 		}
 	})
 }
+
+func TestClusterPort(t *testing.T) {
+	cases := []struct {
+		hosts []string
+		tls   bool
+		want  int
+	}{
+		{[]string{"10.0.0.1"}, false, 9042},
+		{[]string{"10.0.0.1"}, true, 9142},
+		{[]string{"10.0.0.1:9042"}, true, 9042},
+		{[]string{"10.0.0.1", "10.0.0.2:19142"}, false, 19142},
+		{[]string{"[::1]:9142"}, false, 9142},
+		{[]string{"::1"}, true, 9142},
+	}
+	for _, c := range cases {
+		if got := clusterPort(c.hosts, c.tls); got != c.want {
+			t.Errorf("clusterPort(%v, %v) = %d, want %d", c.hosts, c.tls, got, c.want)
+		}
+	}
+}
