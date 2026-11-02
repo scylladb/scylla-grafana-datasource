@@ -124,6 +124,9 @@ certificate files must be mounted into the container, e.g.
   An explicit port is used for every node in the cluster, not only the configured one, so all hosts
   that give a port must give the same one.
 * `tlsCaCertPath` - path to a CA certificate used to verify the server's certificate. Optional; omit to use the system trust store.
+  The file must include the root CA: the chain is validated up to a self-signed root, so a file with only an
+  intermediate CA is rejected (`no valid certificate chain terminating at a self-signed root`). Append the root
+  CA to the file if it currently holds only the intermediate.
 * `tlsClientCertPath` / `tlsClientKeyPath` - paths to a client certificate/key pair, required together for mutual TLS (mTLS). Leave both empty for plain TLS without client authentication.
 * `tlsSkipVerify` - when `true`, disables server certificate/hostname verification. Not recommended outside of testing.
 
