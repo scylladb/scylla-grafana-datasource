@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gopkg.in/inf.v0"
@@ -65,6 +66,8 @@ const (
 	connectionScopeSpecified   = "specified_list"
 	connectionScopeAny         = "any"
 )
+
+const connectTimeout = 5 * time.Second
 
 func normalizeConnectionScope(scope string) string {
 	switch scope {
@@ -284,7 +287,7 @@ func (td *Datasource) query(_ context.Context, pCtx backend.PluginContext, insta
 					if hostRef == "" {
 						continue
 					}
-					if instance.connectionScope == connectionScopeSpecified && !instance.isConfiguredHost(hostRef) {
+					if instance.connectionScope == connectionScopeSpecified && !instance.isConfiguredHostInfo(hostInfo) {
 						continue
 					}
 					targets = append(targets, queryTarget{hostID: hostInfo.HostID(), hostRef: hostRef})
@@ -455,6 +458,13 @@ func (settings *instanceSettings) newClusterConfig(hosts []string) (*gocql.Clust
 	cluster.SslOpts = settings.sslOpts
 	cluster.Port = port
 	cluster.Consistency = gocql.LocalOne
+	// Reach nodes on their internal address when there is evidence for it
+	// (see internalAddressTranslator). A nil pointer must not become a non-nil interface.
+	if translator := newInternalAddressTranslator(hosts); translator != nil {
+		cluster.AddressTranslator = translator
+	}
+	// Fail fast on unreachable hosts instead of hanging past the Grafana/proxy timeouts.
+	cluster.ConnectTimeout = connectTimeout
 	switch settings.connectionScope {
 	case connectionScopeSpecified:
 		cluster.HostFilter = gocql.WhiteListHostFilter(hosts...)
@@ -462,6 +472,92 @@ func (settings *instanceSettings) newClusterConfig(hosts []string) (*gocql.Clust
 		cluster.HostFilter = gocql.AcceptAllFilter()
 	}
 	return cluster, nil
+}
+
+// internalAddressTranslator dials nodes on their internal address when there is evidence
+// that CQL is reachable there.
+//
+// gocql dials the rpc_address a node advertises to clients. When that is a public address
+// (e.g. broadcast_rpc_address on a cloud cluster) and Grafana sits inside the cluster's
+// network, the control connection to the configured private address works but every pool
+// connection to the public addresses is blocked, and the session fails with "no connections
+// were made when creating the session".
+//
+// The internal addresses (preferred_ip, broadcast address, peer) are inter-node addresses;
+// CQL is not necessarily listening there. So a node is translated only with evidence:
+//
+//  1. its own internal address is a contact point: Grafana was given that address, or
+//  2. some node's internal address is a contact point (1), which shows that this cluster
+//     serves CQL on its internal addresses, so its peers are translated too.
+//
+// Without evidence the advertised address is kept, as before. gocql calls the translator
+// on every dial with the node's current metadata, so joins and leaves need no extra state,
+// and a peer dialed before the evidence was seen is translated on its next reconnect. The
+// internal address always comes from the cluster, never from a query.
+type internalAddressTranslator struct {
+	contacts map[string]struct{} // internal contact point IPs, in net.IP.String() form
+	verified atomic.Bool         // evidence (2) seen
+}
+
+// newInternalAddressTranslator returns a translator when at least one contact point is a
+// private IP, i.e. Grafana reaches the cluster on internal addresses. Otherwise it returns
+// nil and gocql keeps dialing rpc_address, as before.
+func newInternalAddressTranslator(contactPoints []string) *internalAddressTranslator {
+	contacts := make(map[string]struct{})
+	for _, h := range contactPoints {
+		if ip := net.ParseIP(normalizeHostAddress(h)); isInternalIP(ip) {
+			contacts[ip.String()] = struct{}{}
+		}
+	}
+	if len(contacts) == 0 {
+		return nil
+	}
+	return &internalAddressTranslator{contacts: contacts}
+}
+
+func isInternalIP(ip net.IP) bool {
+	return ip != nil && (ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast())
+}
+
+func (t *internalAddressTranslator) Translate(addr net.IP, port int) (net.IP, int) {
+	return addr, port
+}
+
+func (t *internalAddressTranslator) TranslateHost(host gocql.AddressTranslatorHostInfo, addr gocql.AddressPort) (gocql.AddressPort, error) {
+	if isInternalIP(addr.Address) {
+		return addr, nil
+	}
+	var internal net.IP
+	for _, ip := range []net.IP{host.PreferredIP(), host.BroadcastAddress(), host.Peer()} {
+		if isInternalIP(ip) {
+			internal = ip
+			break
+		}
+	}
+	if internal == nil {
+		return addr, nil
+	}
+	if t.isContact(host) {
+		t.verified.Store(true)
+		return gocql.AddressPort{Address: internal, Port: addr.Port}, nil
+	}
+	if t.verified.Load() {
+		return gocql.AddressPort{Address: internal, Port: addr.Port}, nil
+	}
+	return addr, nil
+}
+
+// isContact reports whether one of the node's internal addresses is a contact point.
+func (t *internalAddressTranslator) isContact(host gocql.AddressTranslatorHostInfo) bool {
+	for _, ip := range []net.IP{host.PreferredIP(), host.BroadcastAddress(), host.ListenAddress(), host.Peer()} {
+		if ip == nil {
+			continue
+		}
+		if _, ok := t.contacts[ip.String()]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // clusterPort picks the CQL port for the cluster. gocql only honors a port written in a
@@ -601,6 +697,53 @@ func hostInfoAddress(hostInfo *gocql.HostInfo) string {
 	return ""
 }
 
+// hostInfoAddresses returns every address gocql knows for a node. A node can be reached or
+// referred to by more than one of them (e.g. a private broadcast address and a public
+// rpc_address), so matching a requested host must consider all of them.
+func hostInfoAddresses(hostInfo *gocql.HostInfo) []string {
+	if hostInfo == nil {
+		return nil
+	}
+	ips := []net.IP{
+		hostInfo.ConnectAddress(),
+		hostInfo.PreferredIP(),
+		hostInfo.RPCAddress(),
+		hostInfo.BroadcastAddress(),
+		hostInfo.ListenAddress(),
+		hostInfo.Peer(),
+	}
+	addrs := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		if ip == nil {
+			continue
+		}
+		if normalized := normalizeHostAddress(ip.String()); normalized != "" {
+			addrs = append(addrs, normalized)
+		}
+	}
+	return addrs
+}
+
+// hostInfoMatches reports whether any address of the node matches host.
+func hostInfoMatches(hostInfo *gocql.HostInfo, host string) bool {
+	for _, addr := range hostInfoAddresses(hostInfo) {
+		if hostsMatch(addr, host) {
+			return true
+		}
+	}
+	return false
+}
+
+// isConfiguredHostInfo reports whether any address of the node is a configured host.
+func (settings *instanceSettings) isConfiguredHostInfo(hostInfo *gocql.HostInfo) bool {
+	for _, addr := range hostInfoAddresses(hostInfo) {
+		if settings.isConfiguredHost(addr) {
+			return true
+		}
+	}
+	return false
+}
+
 func (settings *instanceSettings) isConfiguredHost(host string) bool {
 	for _, configuredHost := range settings.configuredHosts {
 		if hostsMatch(host, configuredHost) {
@@ -695,7 +838,7 @@ func (settings *instanceSettings) getHostIDByAddress(host string) (string, bool,
 		if hostInfo == nil {
 			continue
 		}
-		if hostsMatch(hostInfoAddress(hostInfo), host) {
+		if hostInfoMatches(hostInfo, host) {
 			return hostInfo.HostID(), true, nil
 		}
 	}
